@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kolon İşaretleme — Veri Sınıflandırma</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark">◈</span>
+        <div>
+          <h1>Kolon İşaretleme</h1>
+          <p>Veritabanı kolonlarının gizlilik kategorisi sınıflandırması</p>
+        </div>
+      </div>
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="excel" role="tab">Excel Yükle</button>
+        <button class="tab" data-tab="single" role="tab">Tekil Sorgu</button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- ==================== EXCEL SEKMESİ ==================== -->
+    <section id="tab-excel" class="tab-panel active">
+
+      <div id="dropzone" class="dropzone">
+        <div class="dropzone-icon">⬆</div>
+        <p class="dropzone-title">Excel dosyasını buraya sürükleyin</p>
+        <p class="dropzone-sub">veya <button type="button" class="linklike" id="browseBtn">dosya seçin</button> (.xlsx)</p>
+        <p class="dropzone-hint">Beklenen sütunlar: Sunucu, Veri Tabanı, Şema, Tablo Ad, Kolon Ad, Veri Tipi, Null Flag, PK Flag</p>
+        <input type="file" id="fileInput" accept=".xlsx,.xlsm" hidden>
+      </div>
+
+      <div id="workspace" class="hidden">
+        <div class="toolbar">
+          <div class="toolbar-left">
+            <span id="fileInfo" class="file-info"></span>
+            <button id="resetBtn" class="btn btn-ghost" title="Yeni dosya yükle">✕ Kapat</button>
+          </div>
+          <div class="toolbar-right">
+            <label class="checkbox">
+              <input type="checkbox" id="judgeToggle" checked>
+              <span>Düşük güvenlilere hakem geçişi uygula</span>
+            </label>
+            <button id="classifyBtn" class="btn btn-primary">Sınıflandırmayı Başlat</button>
+            <button id="stopBtn" class="btn btn-ghost hidden">Durdur</button>
+            <button id="exportBtn" class="btn btn-secondary" disabled>Excel'e Aktar</button>
+          </div>
+        </div>
+
+        <div id="progressWrap" class="progress-wrap hidden">
+          <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+          <span id="progressText" class="progress-text"></span>
+        </div>
+
+        <div id="statsBar" class="stats-bar hidden"></div>
+
+        <div class="filters">
+          <input type="search" id="searchInput" class="search" placeholder="Tablo veya kolon adında ara…">
+          <select id="categoryFilter" class="select">
+            <option value="">Tüm kategoriler</option>
+          </select>
+          <select id="statusFilter" class="select">
+            <option value="">Tüm durumlar</option>
+            <option value="classified">Sınıflandırıldı</option>
+            <option value="pending">Bekliyor</option>
+            <option value="lowconf">Düşük güven (&lt;0.6)</option>
+            <option value="none">Kategorisiz</option>
+            <option value="error">Hatalı</option>
+          </select>
+        </div>
+
+        <div class="table-scroll">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th>#</th><th>Şema</th><th>Tablo</th><th>Kolon</th><th>Açılım</th>
+                <th>Veri Tipi</th><th>PK</th><th>Kategoriler</th><th>Güven</th><th>Gerekçe</th>
+              </tr>
+            </thead>
+            <tbody id="gridBody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="prevPage" class="btn btn-ghost">‹ Önceki</button>
+          <span id="pageInfo"></span>
+          <button id="nextPage" class="btn btn-ghost">Sonraki ›</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TEKİL SORGU SEKMESİ ==================== -->
+    <section id="tab-single" class="tab-panel">
+      <div class="single-layout">
+        <form id="singleForm" class="card form-card">
+          <h2>Tek Kolon Sorgula</h2>
+          <div class="form-grid">
+            <label>Kolon Adı <span class="req">*</span>
+              <input name="kolon" required placeholder="örn. mhIbanNo">
+            </label>
+            <label>Tablo Adı
+              <input name="tablo" placeholder="örn. MusteriHesap">
+            </label>
+            <label>Şema Adı
+              <input name="sema" placeholder="örn. core">
+            </label>
+            <label>Veri Tipi
+              <input name="veri_tipi" placeholder="örn. varchar">
+            </label>
+            <label>Uzunluk
+              <input name="uzunluk" placeholder="örn. 26">
+            </label>
+            <label>Null Flag
+              <select name="nullable">
+                <option value="">Bilinmiyor</option>
+                <option value="1">1 — Nullable</option>
+                <option value="0">0 — Not Null</option>
+              </select>
+            </label>
+            <label>PK Flag
+              <select name="pk">
+                <option value="">Bilinmiyor</option>
+                <option value="1">1 — Primary Key</option>
+                <option value="0">0 — PK değil</option>
+              </select>
+            </label>
+          </div>
+          <button type="submit" class="btn btn-primary" id="singleSubmit">Sınıflandır</button>
+        </form>
+
+        <div id="singleResult" class="card result-card hidden">
+          <h2>Sonuç</h2>
+          <div id="singleResultBody"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>Aşama 1: kural analizi + toplu LLM &nbsp;·&nbsp; Aşama 2: düşük güvenlilere hakem geçişi &nbsp;·&nbsp; Her çalıştırmada yeniden değerlendirilir</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

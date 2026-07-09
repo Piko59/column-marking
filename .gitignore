@@ -1,0 +1,17 @@
+# Gizli bilgiler — asla commit edilmez
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Uygulama çıktıları
+classification_cache.json
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
