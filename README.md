@@ -28,15 +28,6 @@ Tüm ayarlar `.env` dosyasından (veya ortam değişkenlerinden) okunur; seçene
 **asla commit edilmez**; anahtar tanımlı değilse uygulama açılışta anlaşılır bir
 hata verir.
 
-### Local modele geçiş (vLLM / Ollama)
-
-Sunucu OpenAI-uyumlu `/chat/completions` arayüzünü kullandığı için kod değişikliği gerekmez:
-
-```bash
-set QWEN_BASE_URL=http://localhost:8000/v1     # vLLM
-set QWEN_MODEL=qwen3-120b
-set OPENROUTER_API_KEY=dummy
-```
 
 ## Mimari — LLM Hattı
 
