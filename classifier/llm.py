@@ -13,6 +13,7 @@ import httpx
 import config
 
 _client: httpx.AsyncClient | None = None
+_concurrency_sem: asyncio.Semaphore | None = None
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -27,6 +28,21 @@ def _get_client() -> httpx.AsyncClient:
             timeout=config.LLM_TIMEOUT,
         )
     return _client
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """Süreç genelinde TEK, merkezi eşzamanlılık sınırı (config.LLM_CONCURRENCY).
+
+    Çağıran taraf (pipeline.classify_rows) tablo grupları arasında, çağıranın çağıranı
+    (benchmark.scorer) da modlar arasında paralellik uyguluyor; bu iki eksen çarpınca
+    dağınık yerel semaforlar toplam eşzamanlı istek sayısını kontrolsüz büyütür. Tek
+    doğruluk kaynağı burası olsun diye lazy oluşturuluyor (ilk kullanımda çalışan event
+    loop'a bağlanır).
+    """
+    global _concurrency_sem
+    if _concurrency_sem is None:
+        _concurrency_sem = asyncio.Semaphore(config.LLM_CONCURRENCY)
+    return _concurrency_sem
 
 
 async def chat(system: str, user: str, temperature: float | None = None) -> str:
@@ -54,15 +70,18 @@ async def chat(system: str, user: str, temperature: float | None = None) -> str:
     last_err: Exception | None = None
     for attempt in range(config.LLM_MAX_RETRIES):
         try:
-            resp = await _get_client().post("/chat/completions", json=payload)
-            while resp.status_code == 400 and optional_keys:
-                payload.pop(optional_keys.pop(0), None)
+            # Semafor yalnız gerçek istek(ler) sırasında tutulur; üstel bekleme
+            # (aşağıdaki sleep) sırasında bırakılır ki bekleyen başka çağrılar ilerleyebilsin.
+            async with _get_semaphore():
                 resp = await _get_client().post("/chat/completions", json=payload)
-            if resp.status_code in (429, 500, 502, 503, 504):
-                raise httpx.HTTPStatusError("retryable", request=resp.request, response=resp)
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"] or ""
+                while resp.status_code == 400 and optional_keys:
+                    payload.pop(optional_keys.pop(0), None)
+                    resp = await _get_client().post("/chat/completions", json=payload)
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    raise httpx.HTTPStatusError("retryable", request=resp.request, response=resp)
+                resp.raise_for_status()
+                data = resp.json()
+                return data["choices"][0]["message"]["content"] or ""
         except (httpx.HTTPError, KeyError, json.JSONDecodeError) as e:
             last_err = e
             if attempt < config.LLM_MAX_RETRIES - 1:

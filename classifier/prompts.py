@@ -53,6 +53,10 @@ Her kolon için, giriş sırasıyla aynı olacak şekilde bir nesne:
 [{{"kolon": "<kolon adı>", "acilim": "<açılım veya null>",
   "olasi_kategoriler": [<id'ler, en az 1>], "ana_kategori": <tek id>,
   "teknik": <true|false>, "guven": <0-1>, "gerekce": "<tek cümle Türkçe>"}}]
+Girdi BİRDEN FAZLA "=== TABLO: ... ===" bölümü içeriyorsa (tek istekte birden çok küçük
+tablo birleştirilmiş demektir), her nesneye ayrıca "tablo": "<o bölümün tablo adı>" ekle
+— bu, hangi sonucun hangi tabloya ait olduğunu netleştirir. TABLOLAR ARASINDAKİ KOLONLARI
+BİRBİRİNE KARIŞTIRMA; her bölümü yalnız kendi ŞEMA/TABLO bağlamıyla değerlendir.
 
 ÖRNEK — TABLO: CustomerCard için girdi kolonları ccCardNo, ccCvvEnc, ccTaxNo, ccMarginRate, ccRowVer:
 [{{"kolon":"ccCardNo","acilim":"Customer Card - Card Number","olasi_kategoriler":[3,5,7],"ana_kategori":3,"teknik":false,"guven":0.95,"gerekce":"Kart numarası (PAN) BDDK'ya göre hassas veridir; müşteri sırrıdır ve şifreli saklanması gerekir, ana kategori hassas veridir."}},
@@ -60,6 +64,28 @@ Her kolon için, giriş sırasıyla aynı olacak şekilde bir nesne:
 {{"kolon":"ccTaxNo","acilim":"Customer Card - Tax Number","olasi_kategoriler":[1,5],"ana_kategori":1,"teknik":false,"guven":0.85,"gerekce":"Vergi no gerçek kişi müşteride kişisel veridir; müşteri ilişkisini de gösterir, ana kategori kişisel veridir."}},
 {{"kolon":"ccMarginRate","acilim":"Customer Card - Margin Rate","olasi_kategoriler":[4],"ana_kategori":4,"teknik":false,"guven":0.75,"gerekce":"Bankanın iç fiyatlama marjı banka sırrıdır."}},
 {{"kolon":"ccRowVer","acilim":null,"olasi_kategoriler":[6],"ana_kategori":6,"teknik":true,"guven":0.85,"gerekce":"Teknik versiyon kolonudur; hiçbir kategoriye net girmediğinden en yakın olarak iç sistem bilgisi sayıldı."}}]"""
+
+
+def _render_column_line(i: int, c: dict) -> str:
+    """Tek bir kolonun prompt satırını üretir (build_batch_prompt ve
+    build_multi_table_prompt arasında paylaşılır)."""
+    parts = [f"{i}. {c['kolon']}"]
+    dtype = c.get("veri_tipi") or ""
+    if dtype:
+        length = c.get("uzunluk")
+        parts.append(f"tip={dtype}{f'({length})' if length not in (None, '') else ''}")
+    if str(c.get("pk", "")) == "1":
+        parts.append("PK")
+    if str(c.get("nullable", "")) == "0":
+        parts.append("NOT NULL")
+    if c.get("note"):
+        parts.append(f"olası açılım (otomatik, hatalı olabilir): {c['note']}")
+    if c.get("hints"):
+        parts.append(f"sözlük eşleşmesi (otomatik, hatalı olabilir): {json.dumps(c['hints'], ensure_ascii=False)}")
+    samples = [rules.mask_sample(s) for s in (c.get("ornek_degerler") or []) if str(s).strip()]
+    if samples:
+        parts.append(f"örnek değerler (maskeli): {', '.join(samples[:5])}")
+    return " | ".join(parts)
 
 
 def build_batch_prompt(schema: str, table: str, columns: list[dict]) -> str:
@@ -75,27 +101,43 @@ def build_batch_prompt(schema: str, table: str, columns: list[dict]) -> str:
         "KOLONLAR:",
     ]
     for i, c in enumerate(columns, 1):
-        parts = [f"{i}. {c['kolon']}"]
-        dtype = c.get("veri_tipi") or ""
-        if dtype:
-            length = c.get("uzunluk")
-            parts.append(f"tip={dtype}{f'({length})' if length not in (None, '') else ''}")
-        if str(c.get("pk", "")) == "1":
-            parts.append("PK")
-        if str(c.get("nullable", "")) == "0":
-            parts.append("NOT NULL")
-        if c.get("note"):
-            parts.append(f"olası açılım (otomatik, hatalı olabilir): {c['note']}")
-        if c.get("hints"):
-            parts.append(f"sözlük eşleşmesi (otomatik, hatalı olabilir): {json.dumps(c['hints'], ensure_ascii=False)}")
-        samples = [rules.mask_sample(s) for s in (c.get("ornek_degerler") or []) if str(s).strip()]
-        if samples:
-            parts.append(f"örnek değerler (maskeli): {', '.join(samples[:5])}")
-        lines.append(" | ".join(parts))
+        lines.append(_render_column_line(i, c))
     lines.append("")
     lines.append(
         f"Bu {len(columns)} kolonun tamamını sınıflandır ve aynı sırayla JSON dizisi döndür. "
         "Her kolonda 4 adımı uygula: açılım → olası kategoriler → tek ana kategori → güven."
+    )
+    return "\n".join(lines)
+
+
+def build_multi_table_prompt(table_groups: list[tuple[str, str, list[dict]]]) -> str:
+    """Birden fazla KÜÇÜK tabloyu TEK istekte birleştirir (toplam kolon sayısı
+    config.BATCH_SIZE sınırına kadar) — çağrı sayısını azaltıp gecikmeyi düşürmek için.
+
+    table_groups: [(schema, table, columns), ...]. Her tablo kendi "=== TABLO: ... ==="
+    bölümünde, kendi ŞEMA/TABLO bağlamıyla ayrı ayrı verilir; kolonlar GLOBAL sırayla
+    numaralanır (1..N, tablo sınırları boyunca devam eder) ve model her nesneye "tablo"
+    alanını da eklemeye yönlendirilir — bu, pipeline._classify_multi_group'un sonuçları
+    doğru tabloya eşlemesini (isim çakışması olsa bile) sağlar.
+    """
+    total = sum(len(cols) for _, _, cols in table_groups)
+    lines = [
+        f"Bu istekte {len(table_groups)} farklı tabloya ait kolon grubu var (toplam {total} "
+        "kolon). Her bölümü YALNIZ kendi ŞEMA/TABLO bağlamıyla değerlendir; tablolar "
+        "arasındaki kolonları birbirine karıştırma.",
+        "",
+    ]
+    n = 0
+    for schema, table, columns in table_groups:
+        lines.append(f"=== TABLO: {table or '-'} (ŞEMA: {schema or '-'}) ===")
+        for c in columns:
+            n += 1
+            lines.append(_render_column_line(n, c))
+        lines.append("")
+    lines.append(
+        f"Toplam {n} kolonun tamamını sınıflandır ve aynı sırayla JSON dizisi döndür; her "
+        'nesneye hangi tabloya ait olduğunu belirten "tablo" alanını da ekle. Her kolonda '
+        "4 adımı uygula: açılım → olası kategoriler → tek ana kategori → güven."
     )
     return "\n".join(lines)
 

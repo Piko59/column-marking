@@ -7,6 +7,7 @@ kaldırıldığında (random grup) hâlâ doğru sınıflandırılıyor mu, yoks
 doğru tahmin ediliyordu?
 """
 
+import asyncio
 from collections.abc import Awaitable, Callable
 
 from classifier.pipeline import classify_rows
@@ -99,16 +100,35 @@ async def run_benchmark(
     use_judge: bool = True,
     progress_cb: ProgressCB = None,
 ) -> dict:
-    """Tam benchmark koşusunu yürütür ve UI'ın gösterebileceği yapılandırılmış sonucu döndürür."""
+    """Tam benchmark koşusunu yürütür ve UI'ın gösterebileceği yapılandırılmış sonucu döndürür.
+
+    Modlar birbirinden bağımsız olduğu için (her biri kendi classify_rows çağrısı) paralel
+    çalıştırılır — sırayla koşmak toplam süreyi 3 katına çıkarırdı. Gerçek eşzamanlı istek
+    sınırı llm._get_semaphore()'da (config.LLM_CONCURRENCY) merkezi olarak uygulanıyor;
+    burada ek bir sınır yok, aksi hâlde iki ayrı paralellik ekseni çakışırdı.
+    """
     modes = modes or DEFAULT_MODES
     items = ds.iter_dataset_items()
     rows = [it["row"] for it in items]
 
+    completed = 0
+    progress_lock = asyncio.Lock()
+
+    async def run_mode(mode: str) -> tuple[str, list[dict]]:
+        nonlocal completed
+        results = await classify_rows(rows, use_judge=use_judge, mode=mode)
+        if progress_cb:
+            async with progress_lock:
+                completed += 1
+                await progress_cb(completed, len(modes), mode)
+        return mode, results
+
+    mode_results = dict(await asyncio.gather(*(run_mode(m) for m in modes)))
+
     per_mode: dict[str, dict] = {}
     detail_rows: list[dict] = []
-
-    for step, mode in enumerate(modes, 1):
-        results = await classify_rows(rows, use_judge=use_judge, mode=mode)
+    for mode in modes:
+        results = mode_results[mode]
         mode_metrics = []
         for item, pred in zip(items, results):
             m = _row_metrics(item["truth"], pred)
@@ -131,8 +151,6 @@ async def run_benchmark(
             "by_group": by_group,
             "by_bucket": by_bucket,
         }
-        if progress_cb:
-            await progress_cb(step, len(modes), mode)
 
     return {
         "modes": modes,

@@ -150,6 +150,88 @@ async def _classify_group(schema: str, table: str, cols: list[dict]) -> list[dic
     return results
 
 
+async def _classify_multi_group(table_groups: list[tuple[str, str, list[dict]]]) -> list[dict]:
+    """Aşama 1 (çoklu tablo): birden fazla KÜÇÜK tabloyu tek çağrıda sınıflandırır.
+
+    Gecikme büyük ölçüde çağrı başına sabit bir yükten (modelin "düşünme" süresi)
+    geliyor, kolon sayısından değil; küçük tabloları BATCH_SIZE'a kadar birleştirmek
+    çağrı sayısını azaltıp toplam süreyi düşürür. Her tablo kendi ŞEMA/TABLO
+    bölümünde ayrı verildiği için doğruluk etkilenmez (bkz. prompts.build_multi_table_prompt).
+    """
+    all_cols = [c for _, _, cols in table_groups for c in cols]
+    user_prompt = prompts.build_multi_table_prompt(table_groups)
+    try:
+        raw = await llm.chat(prompts.SYSTEM_PROMPT, user_prompt)
+        parsed = llm.extract_json(raw)
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        if not isinstance(parsed, list):
+            raise ValueError("JSON dizisi bekleniyordu")
+    except Exception as e:
+        return [_error_result(c["kolon"], str(e)) for c in all_cols]
+
+    # Öncelik: (tablo, kolon) eşleşmesi (model "tablo" alanını doldurduysa — isim
+    # çakışmalarını bile doğru ayırır) → yalnız kolon adı (kullanılmamış ilk aday) → sıra.
+    by_table_name: dict[tuple[str, str], dict] = {}
+    by_name: dict[str, list[dict]] = {}
+    for p in parsed:
+        if not isinstance(p, dict):
+            continue
+        name_key = str(p.get("kolon", "")).strip().lower()
+        by_name.setdefault(name_key, []).append(p)
+        tbl_key = str(p.get("tablo", "")).strip().lower()
+        if tbl_key:
+            by_table_name.setdefault((tbl_key, name_key), p)
+
+    used: set[int] = set()
+    results = []
+    i = 0
+    for schema, table, cols in table_groups:
+        tbl_key = (table or "").strip().lower()
+        for c in cols:
+            name_key = c["kolon"].strip().lower()
+            p = by_table_name.get((tbl_key, name_key))
+            if p is None:
+                p = next((cand for cand in by_name.get(name_key, []) if id(cand) not in used), None)
+            if p is None and i < len(parsed) and isinstance(parsed[i], dict):
+                p = parsed[i]
+            if p is None:
+                results.append(_error_result(c["kolon"], "LLM bu kolon için sonuç döndürmedi"))
+            else:
+                used.add(id(p))
+                results.append(_sanitize(p, c["kolon"], "llm"))
+            i += 1
+    return results
+
+
+def _pack_into_superbatches(
+    pending: dict[tuple[str, str], list[tuple[int, dict]]], batch_size: int
+) -> list[list[tuple[tuple[str, str], list[tuple[int, dict]]]]]:
+    """Küçük tablo gruplarını, toplam kolon sayısı batch_size'ı aşmayacak şekilde tek
+    "süper-batch"ta birleştirir (çağrı sayısını azaltmak için). Tek başına batch_size'ı
+    aşan bir grup, eski davranışla aynı şekilde kendi içinde ayrıca parçalanır — her
+    parça kendi süper-batch'i olur (tek tablo, birleştirme yok)."""
+    superbatches: list[list[tuple[tuple[str, str], list[tuple[int, dict]]]]] = []
+    current: list[tuple[tuple[str, str], list[tuple[int, dict]]]] = []
+    current_size = 0
+    for group_key, items in pending.items():
+        if len(items) > batch_size:
+            if current:
+                superbatches.append(current)
+                current, current_size = [], 0
+            for start in range(0, len(items), batch_size):
+                superbatches.append([(group_key, items[start : start + batch_size])])
+            continue
+        if current_size + len(items) > batch_size:
+            superbatches.append(current)
+            current, current_size = [], 0
+        current.append((group_key, items))
+        current_size += len(items)
+    if current:
+        superbatches.append(current)
+    return superbatches
+
+
 async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
     """Aşama 2: düşük güvenli kolon için hakem geçişi."""
     try:
@@ -220,40 +302,47 @@ async def classify_rows(
         group_key = (str(sema_name), str(tablo_name))
         pending.setdefault(group_key, []).append((idx, col))
 
-    # 3: tablo bazlı toplu sınıflandırma (gruplar paralel, grup içi tek çağrı)
-    async def process_group(group_key: tuple[str, str], items: list[tuple[int, dict]]):
-        schema, table = group_key
-        for start in range(0, len(items), config.BATCH_SIZE):
-            chunk = items[start : start + config.BATCH_SIZE]
+    # 3: tablo bazlı toplu sınıflandırma. Küçük tabloları BATCH_SIZE sınırına kadar TEK
+    # çağrıda birleştiriyoruz (süper-batch) — gecikme büyük ölçüde çağrı başına sabit bir
+    # "düşünme" yükünden geliyor, kolon sayısından değil; çağrı sayısını azaltmak en büyük
+    # kazanç. Gerçek eşzamanlılık sınırı artık burada değil, llm._get_semaphore()'da
+    # (config.LLM_CONCURRENCY) — merkezi olması gerekiyor çünkü scorer.py modları da
+    # paralel çalıştırıyor; dağınık yerel semaforlar toplamda kontrolsüz büyürdü.
+    superbatches = _pack_into_superbatches(pending, config.BATCH_SIZE)
+
+    async def process_superbatch(sb: list[tuple[tuple[str, str], list[tuple[int, dict]]]]):
+        if len(sb) == 1:
+            (schema, table), chunk = sb[0]
             cols = [c for _, c in chunk]
             group_results = await _classify_group(schema, table, cols)
-            # 4: hakem geçişi — yalnızca gerçekten kararsız kolonlar; modelin bilinçli
-            # olarak "teknik" işaretledikleri hakeme gitmez (hız için kritik)
-            if use_judge:
-                judge_tasks = []
-                for j, res in enumerate(group_results):
-                    if (res["kaynak"] == "llm" and res["guven"] < config.JUDGE_THRESHOLD
-                            and not res["teknik"]):
-                        judge_tasks.append((j, _judge(schema, table, cols[j], res)))
-                if judge_tasks:
-                    judged = await asyncio.gather(*(t for _, t in judge_tasks))
-                    for (j, _), new_res in zip(judge_tasks, judged):
-                        group_results[j] = new_res
-            for (idx, col), res in zip(chunk, group_results):
-                results[idx] = res
-                if config.USE_CACHE and mode == "name_content" and res["kaynak"] != "hata":
-                    with _cache_lock:
-                        _cache[_cache_key(rows[idx])] = {
-                            k: v for k, v in res.items() if k != "kaynak"
-                        } | {"kaynak_orj": res["kaynak"]}
+        else:
+            table_groups = [(gk[0], gk[1], [c for _, c in chunk]) for gk, chunk in sb]
+            group_results = await _classify_multi_group(table_groups)
+            chunk = [pair for _, items in sb for pair in items]
 
-    sem = asyncio.Semaphore(4)  # aynı anda en fazla 4 grup
+        # 4: hakem geçişi — yalnızca gerçekten kararsız kolonlar; modelin bilinçli olarak
+        # "teknik" işaretledikleri hakeme gitmez (hız için kritik)
+        if use_judge:
+            judge_tasks = []
+            for j, res in enumerate(group_results):
+                if (res["kaynak"] == "llm" and res["guven"] < config.JUDGE_THRESHOLD
+                        and not res["teknik"]):
+                    _, col = chunk[j]
+                    judge_tasks.append((j, _judge(str(col.get("sema", "")), str(col.get("tablo", "")), col, res)))
+            if judge_tasks:
+                judged = await asyncio.gather(*(t for _, t in judge_tasks))
+                for (j, _), new_res in zip(judge_tasks, judged):
+                    group_results[j] = new_res
 
-    async def bounded(gk, items):
-        async with sem:
-            await process_group(gk, items)
+        for (idx, col), res in zip(chunk, group_results):
+            results[idx] = res
+            if config.USE_CACHE and mode == "name_content" and res["kaynak"] != "hata":
+                with _cache_lock:
+                    _cache[_cache_key(rows[idx])] = {
+                        k: v for k, v in res.items() if k != "kaynak"
+                    } | {"kaynak_orj": res["kaynak"]}
 
-    await asyncio.gather(*(bounded(gk, items) for gk, items in pending.items()))
+    await asyncio.gather(*(process_superbatch(sb) for sb in superbatches))
     if config.USE_CACHE and mode == "name_content" and pending:
         _save_cache()
 

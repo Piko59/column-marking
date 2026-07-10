@@ -74,6 +74,14 @@ kolonlar en yakın kategoriye bağlanıp `teknik=1` işaretlenir. Önbellek vars
 Hakem geçişi arayüzden kapatılabilir. Eşikler `config.py` içinde
 (`BATCH_SIZE`, `JUDGE_THRESHOLD`, hız için `REASONING_EFFORT=low`).
 
+**Hız:** Gecikme büyük ölçüde çağrı başına sabit bir model gecikmesinden gelir (kolon
+sayısından değil), bu yüzden iki paralellik ekseni var: küçük tablolar `BATCH_SIZE`'a
+kadar TEK çağrıda birleştirilir (her biri kendi ŞEMA/TABLO bölümünde, bağlam karışmaz —
+bkz. `prompts.build_multi_table_prompt`), ve (benchmark'ta) üç mod eşzamanlı koşar.
+Gerçek eşzamanlı istek sınırı TEK, merkezi bir yerde: `llm._get_semaphore()`
+(`config.LLM_CONCURRENCY`, varsayılan 8) — iki paralellik ekseni birden var olduğundan
+dağınık yerel semaforlar toplam isteği kontrolsüz büyütürdü.
+
 Kategori tanımları mevzuata dayanır: KVKK m.3/d ve m.6; 5411 sayılı Bankacılık Kanunu m.73;
 Sır Niteliğindeki Bilgilerin Paylaşılması Hakkında Yönetmelik (BDDK, 2021); Bankaların Bilgi
 Sistemleri ve Elektronik Bankacılık Hizmetleri Hakkında Yönetmelik ("hassas veri" tanımı).

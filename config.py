@@ -29,3 +29,9 @@ REASONING_EFFORT = os.getenv("REASONING_EFFORT", "low")
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "120"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 CACHE_FILE = os.getenv("CACHE_FILE", "classification_cache.json")
+
+# Süreç genelinde aynı anda kaç LLM isteği açık olabilir (llm.chat içindeki global
+# semafor). Birden fazla mod artık paralel koştuğundan (benchmark) bu tek, MERKEZİ
+# sınır önemli: dağınık yerel semaforlar mod paralelliğiyle birlikte toplam eşzamanlı
+# istek sayısını kontrolsüz büyütürdü. Sağlayıcının rate limit'ine göre ayarlayın.
+LLM_CONCURRENCY = int(os.getenv("LLM_CONCURRENCY", "8"))

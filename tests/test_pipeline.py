@@ -1,8 +1,16 @@
 import pytest
 
 import config
-from classifier import prompts
-from classifier.pipeline import _anonymize, _cache_key, _error_result, _sanitize, classify_rows
+from classifier import llm, prompts
+from classifier.pipeline import (
+    _anonymize,
+    _cache_key,
+    _classify_multi_group,
+    _error_result,
+    _pack_into_superbatches,
+    _sanitize,
+    classify_rows,
+)
 
 
 class TestCacheKey:
@@ -134,3 +142,109 @@ class TestClassifyRowsModeValidation:
         # Ağ çağrısı yapılmadan, en baştaki doğrulamada patlamalı
         with pytest.raises(ValueError):
             await classify_rows([{"kolon": "x"}], mode="bogus-mode")
+
+
+def _col(kolon):
+    return {"kolon": kolon}
+
+
+class TestPackIntoSuperbatches:
+    def test_combines_small_groups_within_limit(self):
+        pending = {
+            ("s", "t1"): [(0, _col("a"))],
+            ("s", "t2"): [(1, _col("b"))],
+        }
+        sb = _pack_into_superbatches(pending, batch_size=5)
+        assert len(sb) == 1
+        assert len(sb[0]) == 2  # iki grup tek süper-batch'te birleşti
+
+    def test_splits_into_new_superbatch_when_limit_exceeded(self):
+        pending = {
+            ("s", "t1"): [(0, _col("a")), (1, _col("b")), (2, _col("c"))],
+            ("s", "t2"): [(3, _col("d"))],
+        }
+        sb = _pack_into_superbatches(pending, batch_size=3)
+        assert len(sb) == 2  # t1 tek başına dolduruyor; t2 ayrı süper-batch
+
+    def test_oversized_single_group_chunked_alone_not_merged(self):
+        items = [(i, _col(f"c{i}")) for i in range(7)]
+        pending = {("s", "big"): items}
+        sb = _pack_into_superbatches(pending, batch_size=3)
+        assert len(sb) == 3  # 7 kolon / 3'lük parçalar -> 3,3,1
+        assert all(len(group) == 1 for group in sb)  # her parça tek tablo, birleştirme yok
+        sizes = sorted(len(items) for group in sb for _, items in group)
+        assert sizes == [1, 3, 3]
+
+    def test_empty_pending_returns_empty(self):
+        assert _pack_into_superbatches({}, batch_size=25) == []
+
+    def test_all_items_preserved_across_superbatches(self):
+        pending = {
+            ("s", "t1"): [(0, _col("a")), (1, _col("b"))],
+            ("s", "t2"): [(2, _col("c"))],
+            ("s", "t3"): [(3, _col("d")), (4, _col("e")), (5, _col("f"))],
+        }
+        sb = _pack_into_superbatches(pending, batch_size=4)
+        all_idxs = sorted(idx for group in sb for _, items in group for idx, _ in items)
+        assert all_idxs == [0, 1, 2, 3, 4, 5]
+
+
+class TestBuildMultiTablePrompt:
+    def test_renders_a_section_per_table(self):
+        prompt = prompts.build_multi_table_prompt([
+            ("dbo", "Personel", [{"kolon": "persAdSoyad", "veri_tipi": "varchar", "uzunluk": "100"}]),
+            ("risk", "OperasyonRisk", [{"kolon": "oprFindeksSkor", "veri_tipi": "int", "uzunluk": ""}]),
+        ])
+        assert "=== TABLO: Personel (ŞEMA: dbo) ===" in prompt
+        assert "=== TABLO: OperasyonRisk (ŞEMA: risk) ===" in prompt
+        assert "persAdSoyad" in prompt
+        assert "oprFindeksSkor" in prompt
+
+    def test_column_numbering_is_global_across_tables(self):
+        prompt = prompts.build_multi_table_prompt([
+            ("s", "t1", [{"kolon": "a"}, {"kolon": "b"}]),
+            ("s", "t2", [{"kolon": "c"}]),
+        ])
+        assert "1. a" in prompt
+        assert "2. b" in prompt
+        assert "3. c" in prompt  # t2'nin ilk kolonu 1'e değil 3'e devam ediyor
+
+    def test_instructs_model_to_echo_table_field(self):
+        prompt = prompts.build_multi_table_prompt([("s", "t1", [{"kolon": "a"}])])
+        assert '"tablo"' in prompt
+
+
+class TestClassifyMultiGroup:
+    @pytest.mark.asyncio
+    async def test_disambiguates_same_column_name_across_tables_by_table_field(self, monkeypatch):
+        # İki farklı tabloda AYNI isimde kolon var ("id"); model her ikisini de farklı
+        # kategoriyle dönüyor ve "tablo" alanıyla hangisinin hangisi olduğunu belirtiyor.
+        async def fake_chat(system, user, temperature=None):
+            import json
+            return json.dumps([
+                {"tablo": "TabloA", "kolon": "id", "olasi_kategoriler": [5], "ana_kategori": 5,
+                 "teknik": False, "guven": 0.9, "gerekce": "A"},
+                {"tablo": "TabloB", "kolon": "id", "olasi_kategoriler": [4], "ana_kategori": 4,
+                 "teknik": False, "guven": 0.9, "gerekce": "B"},
+            ])
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+        table_groups = [
+            ("s", "TabloA", [{"kolon": "id", "veri_tipi": "int"}]),
+            ("s", "TabloB", [{"kolon": "id", "veri_tipi": "int"}]),
+        ]
+        results = await _classify_multi_group(table_groups)
+        assert len(results) == 2
+        assert results[0]["ana_kategori"] == 5  # TabloA.id
+        assert results[1]["ana_kategori"] == 4  # TabloB.id
+
+    @pytest.mark.asyncio
+    async def test_llm_failure_returns_error_for_every_column(self, monkeypatch):
+        async def failing_chat(system, user, temperature=None):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(llm, "chat", failing_chat)
+        table_groups = [("s", "t1", [{"kolon": "a"}, {"kolon": "b"}])]
+        results = await _classify_multi_group(table_groups)
+        assert len(results) == 2
+        assert all(r["kaynak"] == "hata" for r in results)
