@@ -264,6 +264,14 @@ def benchmark_job_status(job_id: str):
     return job
 
 
+@app.delete("/api/benchmark/jobs/{job_id}")
+def benchmark_cancel_job(job_id: str):
+    if bench_jobs.get_job(job_id) is None:
+        raise HTTPException(404, "İş bulunamadı.")
+    cancelled = bench_jobs.cancel_job(job_id)
+    return {"cancelled": cancelled}
+
+
 @app.get("/api/benchmark/runs")
 def benchmark_list_runs(limit: int = 50):
     return {"runs": bench_store.list_runs(limit=limit)}

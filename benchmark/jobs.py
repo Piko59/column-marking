@@ -39,6 +39,9 @@ async def _run(job_id: str, modes: list[str], use_judge: bool) -> None:
         }
         store.save_run(run_id, meta, result)
         _jobs[job_id] = {**_jobs[job_id], "status": "done", "run_id": run_id}
+    except asyncio.CancelledError:
+        _jobs[job_id] = {**_jobs[job_id], "status": "cancelled"}
+        raise
     except Exception as e:
         _jobs[job_id] = {**_jobs[job_id], "status": "error", "error": str(e)}
 
@@ -50,10 +53,27 @@ def start_job(modes: list[str], use_judge: bool) -> str:
         "progress": {"step": 0, "total": len(modes), "mode": None},
         "run_id": None,
         "error": None,
+        "task": None,
     }
-    asyncio.create_task(_run(job_id, modes, use_judge))
+    task = asyncio.create_task(_run(job_id, modes, use_judge))
+    _jobs[job_id]["task"] = task
     return job_id
 
 
 def get_job(job_id: str) -> dict | None:
-    return _jobs.get(job_id)
+    """API'ye döndürülecek durum; ham kaydın 'task' alanı (JSON-serileştirilemez) hariç."""
+    job = _jobs.get(job_id)
+    if job is None:
+        return None
+    return {k: v for k, v in job.items() if k != "task"}
+
+
+def cancel_job(job_id: str) -> bool:
+    """Çalışan bir job'ı iptal eder. Zaten bitmiş/bulunamayan job için False döner."""
+    job = _jobs.get(job_id)
+    if job is None or job.get("status") != "running":
+        return False
+    task = job.get("task")
+    if task is not None:
+        task.cancel()
+    return True

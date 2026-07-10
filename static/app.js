@@ -568,6 +568,16 @@ async function loadBenchHistory() {
   }
 }
 
+let currentBenchJobId = null;
+
+function benchResetControls() {
+  $("benchRunBtn").disabled = false;
+  $("benchRunBtn").classList.remove("hidden");
+  $("benchStopBtn").classList.add("hidden");
+  $("benchProgressWrap").classList.add("hidden");
+  currentBenchJobId = null;
+}
+
 function pollBenchJob(jobId) {
   clearInterval(benchPollTimer);
   benchPollTimer = setInterval(async () => {
@@ -586,20 +596,21 @@ function pollBenchJob(jobId) {
         const run = await (await api(`/api/benchmark/runs/${job.run_id}`)).json();
         renderBenchRun(run);
         await loadBenchHistory();
-        $("benchRunBtn").disabled = false;
-        $("benchProgressWrap").classList.add("hidden");
+        benchResetControls();
         toast("Benchmark tamamlandı.");
       } else if (job.status === "error") {
         clearInterval(benchPollTimer);
         toast("Benchmark hatası: " + (job.error || "bilinmeyen hata"), true);
-        $("benchRunBtn").disabled = false;
-        $("benchProgressWrap").classList.add("hidden");
+        benchResetControls();
+      } else if (job.status === "cancelled") {
+        clearInterval(benchPollTimer);
+        toast("Benchmark durduruldu.");
+        benchResetControls();
       }
     } catch (err) {
       clearInterval(benchPollTimer);
       toast("İş durumu alınamadı: " + err.message, true);
-      $("benchRunBtn").disabled = false;
-      $("benchProgressWrap").classList.add("hidden");
+      benchResetControls();
     }
   }, 1500);
 }
@@ -608,7 +619,8 @@ $("benchRunBtn").addEventListener("click", async () => {
   const modes = Array.from(document.querySelectorAll(".benchMode:checked")).map((el) => el.value);
   if (!modes.length) { toast("En az bir mod seçin.", true); return; }
   const useJudge = $("benchJudgeToggle").checked;
-  $("benchRunBtn").disabled = true;
+  $("benchRunBtn").classList.add("hidden");
+  $("benchStopBtn").classList.remove("hidden");
   $("benchProgressWrap").classList.remove("hidden");
   $("benchProgressText").textContent = "Başlatılıyor…";
   $("benchProgressFill").style.width = "0%";
@@ -617,11 +629,24 @@ $("benchRunBtn").addEventListener("click", async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ modes, use_judge: useJudge }),
     })).json();
+    currentBenchJobId = data.job_id;
     pollBenchJob(data.job_id);
   } catch (err) {
     toast("Benchmark başlatılamadı: " + err.message, true);
-    $("benchRunBtn").disabled = false;
-    $("benchProgressWrap").classList.add("hidden");
+    benchResetControls();
+  }
+});
+
+$("benchStopBtn").addEventListener("click", async () => {
+  if (!currentBenchJobId) return;
+  $("benchStopBtn").disabled = true;
+  try {
+    await api(`/api/benchmark/jobs/${currentBenchJobId}`, { method: "DELETE" });
+    $("benchProgressText").textContent = "Durduruluyor…";
+  } catch (err) {
+    toast("Durdurulamadı: " + err.message, true);
+  } finally {
+    $("benchStopBtn").disabled = false;
   }
 });
 
