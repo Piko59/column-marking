@@ -1,7 +1,9 @@
+import datetime
+
 import pytest
 from fastapi import HTTPException
 
-from main import _cell, _map_headers, _norm_header
+from main import _cell, _infer_type, _map_headers, _norm_header, _split_samples
 
 
 class TestNormHeader:
@@ -52,6 +54,47 @@ class TestMapHeaders:
         assert mapping[0] == "sema"
         assert mapping[1] == "sira"
         assert mapping[2] == "kolon"
+
+
+class TestOrnekDegerlerHeader:
+    def test_sample_column_recognized(self):
+        mapping = _map_headers(["Kolon Ad", "Örnek Değerler"])
+        assert mapping[1] == "ornek_degerler"
+
+    def test_sample_column_english(self):
+        mapping = _map_headers(["COLUMN_NAME", "SAMPLE_VALUES"])
+        assert mapping[1] == "ornek_degerler"
+
+
+class TestSplitSamples:
+    def test_semicolon_and_pipe_separators(self):
+        assert _split_samples("a; b | c") == ["a", "b", "c"]
+
+    def test_comma_needs_trailing_space(self):
+        # "1,5" gibi ondalıklar bölünmez; ", " ile ayrılmış listeler bölünür
+        assert _split_samples("1,5") == ["1,5"]
+        assert _split_samples("elma, armut") == ["elma", "armut"]
+
+    def test_empty_and_blank(self):
+        assert _split_samples("") == []
+        assert _split_samples("  ;  ") == []
+
+
+class TestInferType:
+    def test_all_ints(self):
+        assert _infer_type([1, 2, 3]) == ("int", "")
+
+    def test_mixed_numeric_is_decimal(self):
+        assert _infer_type([1, 2.5]) == ("decimal", "")
+
+    def test_dates(self):
+        assert _infer_type([datetime.date(2026, 1, 1)]) == ("date", "")
+
+    def test_text_gets_max_length(self):
+        assert _infer_type(["ab", "abcd"]) == ("varchar", "4")
+
+    def test_empty_values(self):
+        assert _infer_type([None, ""]) == ("", "")
 
 
 class TestCell:

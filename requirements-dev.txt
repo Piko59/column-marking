@@ -1,3 +1,5 @@
 # Sadece geliştirme/test ortamı için (prod kurulumuna dahil edilmez).
 -r requirements.txt
 pytest>=8.0
+pytest-asyncio>=0.24
+

@@ -14,6 +14,20 @@ import config
 
 _client: httpx.AsyncClient | None = None
 _concurrency_sem: asyncio.Semaphore | None = None
+_bound_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _ensure_loop_bound() -> None:
+    """İstemci ve semafor, oluşturuldukları event loop'a bağlıdır. Sunucu tek loop
+    kullanır ama bir script art arda asyncio.run() çağırırsa (her biri yeni loop)
+    eski nesneler "attached to a different loop" ile patlar — loop değiştiyse ikisini
+    de sıfırla ki ilk kullanımda yeni loop'ta yeniden kurulsunlar."""
+    global _client, _concurrency_sem, _bound_loop
+    loop = asyncio.get_running_loop()
+    if _bound_loop is not loop:
+        _client = None
+        _concurrency_sem = None
+        _bound_loop = loop
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -37,7 +51,7 @@ def _get_semaphore() -> asyncio.Semaphore:
     (benchmark.scorer) da modlar arasında paralellik uyguluyor; bu iki eksen çarpınca
     dağınık yerel semaforlar toplam eşzamanlı istek sayısını kontrolsüz büyütür. Tek
     doğruluk kaynağı burası olsun diye lazy oluşturuluyor (ilk kullanımda çalışan event
-    loop'a bağlanır).
+    loop'a bağlanır; loop değişirse _ensure_loop_bound yeniden kurar).
     """
     global _concurrency_sem
     if _concurrency_sem is None:
@@ -51,6 +65,7 @@ async def chat(system: str, user: str, temperature: float | None = None) -> str:
     Tekrarlanabilirlik için varsayılan temperature=0 ve (sağlayıcı destekliyorsa) sabit
     "seed" gönderilir — aynı girdiye aynı çıktı denetim/benchmark için önemlidir.
     """
+    _ensure_loop_bound()
     payload = {
         "model": config.QWEN_MODEL,
         "temperature": config.LLM_TEMPERATURE if temperature is None else temperature,

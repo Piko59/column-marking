@@ -16,7 +16,7 @@ import threading
 
 import config
 
-from . import llm, prompts, rules
+from . import decisions, llm, prompts, rules
 from .categories import CATEGORIES, CATEGORY_PRIORITY
 
 # classify_rows(mode=...) — bkz. fonksiyon docstring'i.
@@ -120,9 +120,11 @@ def _error_result(column_name: str, msg: str) -> dict:
 
 # --- Aşamalar ----------------------------------------------------------------
 
-async def _classify_group(schema: str, table: str, cols: list[dict]) -> list[dict]:
+async def _classify_group(
+    schema: str, table: str, cols: list[dict], examples: list[dict] | None = None
+) -> list[dict]:
     """Aşama 1: bir tablonun kolon grubunu tek çağrıda sınıflandırır."""
-    user_prompt = prompts.build_batch_prompt(schema, table, cols)
+    user_prompt = prompts.build_batch_prompt(schema, table, cols, examples=examples)
     try:
         raw = await llm.chat(prompts.SYSTEM_PROMPT, user_prompt)
         parsed = llm.extract_json(raw)
@@ -150,7 +152,9 @@ async def _classify_group(schema: str, table: str, cols: list[dict]) -> list[dic
     return results
 
 
-async def _classify_multi_group(table_groups: list[tuple[str, str, list[dict]]]) -> list[dict]:
+async def _classify_multi_group(
+    table_groups: list[tuple[str, str, list[dict]]], examples: list[dict] | None = None
+) -> list[dict]:
     """Aşama 1 (çoklu tablo): birden fazla KÜÇÜK tabloyu tek çağrıda sınıflandırır.
 
     Gecikme büyük ölçüde çağrı başına sabit bir yükten (modelin "düşünme" süresi)
@@ -159,7 +163,7 @@ async def _classify_multi_group(table_groups: list[tuple[str, str, list[dict]]])
     bölümünde ayrı verildiği için doğruluk etkilenmez (bkz. prompts.build_multi_table_prompt).
     """
     all_cols = [c for _, _, cols in table_groups for c in cols]
-    user_prompt = prompts.build_multi_table_prompt(table_groups)
+    user_prompt = prompts.build_multi_table_prompt(table_groups, examples=examples)
     try:
         raw = await llm.chat(prompts.SYSTEM_PROMPT, user_prompt)
         parsed = llm.extract_json(raw)
@@ -276,9 +280,16 @@ async def classify_rows(
         _load_cache()
     results: list[dict | None] = [None] * len(rows)
 
-    # 1-2: kural analizi + önbellek
+    # 1-2: karar sözlüğü + kural analizi + önbellek
     pending: dict[tuple[str, str], list[tuple[int, dict]]] = {}
     for idx, row in enumerate(rows):
+        if mode == "name_content":
+            # İnsan kararı (onayla/düzelt) her şeyden önce gelir: aynı kolon imzası
+            # bir daha LLM'e gitmez. Nötr kayıtlar lookup'tan hiç dönmez (etkisiz).
+            decided = decisions.lookup(row)
+            if decided:
+                results[idx] = decisions.as_result(decided, row.get("kolon", ""))
+                continue
         if config.USE_CACHE and mode == "name_content":
             cached = _cache.get(_cache_key(row))
             if cached:
@@ -311,13 +322,19 @@ async def classify_rows(
     superbatches = _pack_into_superbatches(pending, config.BATCH_SIZE)
 
     async def process_superbatch(sb: list[tuple[tuple[str, str], list[tuple[int, dict]]]]):
+        # Few-shot: bu çağrıdaki kolonlara en benzer insan-onaylı kararlar (≤ FEWSHOT_K).
+        # Yalnız üretim modunda — benchmark modları insan bilgisiyle kirlenmemeli.
+        all_chunk_cols = [c for _, items in sb for _, c in items]
+        examples = (
+            decisions.similar_decisions(all_chunk_cols) if mode == "name_content" else []
+        )
         if len(sb) == 1:
             (schema, table), chunk = sb[0]
             cols = [c for _, c in chunk]
-            group_results = await _classify_group(schema, table, cols)
+            group_results = await _classify_group(schema, table, cols, examples=examples)
         else:
             table_groups = [(gk[0], gk[1], [c for _, c in chunk]) for gk, chunk in sb]
-            group_results = await _classify_multi_group(table_groups)
+            group_results = await _classify_multi_group(table_groups, examples=examples)
             chunk = [pair for _, items in sb for pair in items]
 
         # 4: hakem geçişi — yalnızca gerçekten kararsız kolonlar; modelin bilinçli olarak

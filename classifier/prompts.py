@@ -22,10 +22,13 @@ ADIM 1 — AÇILIM: Kolon adının açılımını çıkarmayı dene; tablo adı,
   Sana verilen "olası açılım" ve "sözlük eşleşmesi" ipuçları OTOMATİK üretilmiştir; eksik
   veya yanlış olabilir, körü körüne uyma. Kolon adı anlamsız/anonimleştirilmiş görünüyorsa
   (örn. "col_a1b2c3" gibi bir kod) isimden açılım çıkarmaya ÇALIŞMA; bu durumda tamamen
-  "örnek değerler" (verilmişse), veri tipi ve uzunluğa dayan. Örnek değerler maskeli
-  gösterilir (örn. "12*******34"); maskeli hâliyle bile uzunluk, karakter sınıfı (sayısal/
-  alfanümerik) ve baştaki/sondaki karakterler (IBAN'da "TR" gibi) güçlü bir sınıflandırma
-  sinyalidir — verilmişse mutlaka değerlendir.
+  "örnek değerler" (verilmişse), veri tipi ve uzunluğa dayan. Örnek değerler iki tür
+  maskeyle gösterilir: rakam ağırlıklı değerlerde baş/son karakterler korunup ortası
+  yıldızlanır (örn. "12*******34", IBAN'da "TR**...26"); metinsel değerlerde içerik hiç
+  gösterilmez, yalnız desen verilir (büyük harf→X, küçük harf→x, rakam→9; örn. "9 Xx+"
+  kan grubu deseni, "xxxx99@xxxxx.xxx" e-posta deseni olabilir). Maskeli hâliyle bile
+  uzunluk, karakter deseni ve baş/son karakterler güçlü sınıflandırma sinyalidir —
+  verilmişse mutlaka değerlendir.
 ADIM 2 — OLASI KATEGORİLER: Kolonun girebileceği TÜM kategorileri belirle
   ("olasi_kategoriler" listesi).
 ADIM 3 — ANA KATEGORİ: Olası kategorileri bir kez daha analiz et ve EN UYGUN TEK kategoriyi
@@ -88,13 +91,41 @@ def _render_column_line(i: int, c: dict) -> str:
     return " | ".join(parts)
 
 
-def build_batch_prompt(schema: str, table: str, columns: list[dict]) -> str:
+def render_decision_examples(examples: list[dict] | None) -> list[str]:
+    """İnsan onaylı benzer kararları few-shot bloğu olarak üretir (boşsa hiç üretmez).
+
+    Bilinçli olarak "yol gösterici, bağlayıcı değil" çerçevesinde verilir: insan
+    kararının güven=1.0 ağırlığı yalnız BİREBİR imza eşleşmesinde (karar sözlüğü,
+    pipeline'da LLM'den önce) uygulanır; benzer-ama-farklı kolonda model kendi
+    kararını verir. Örnek sayısı config.FEWSHOT_K ile sınırlı — prompt şişmez.
+    """
+    if not examples:
+        return []
+    lines = [
+        "İNSAN ONAYLI ÖNCEKİ KARARLAR (benzer kolon adları için yol gösterici — "
+        "bağlayıcı DEĞİL; kolonun tablosu/bağlamı farklıysa kendi kararını ver):",
+    ]
+    for ex in examples:
+        label = "onaylandı" if ex.get("action") == "onayla" else "insan düzeltti"
+        dtype = f" ({ex['veri_tipi']})" if ex.get("veri_tipi") else ""
+        lines.append(
+            f"- {ex.get('kolon', '?')}{dtype}: olası kategoriler={ex.get('kategoriler')}, "
+            f"ana kategori={ex.get('ana_kategori')} [{label}]"
+        )
+    lines.append("")
+    return lines
+
+
+def build_batch_prompt(
+    schema: str, table: str, columns: list[dict], examples: list[dict] | None = None
+) -> str:
     """Bir tabloya ait kolon grubu için kullanıcı prompt'u.
 
     columns: [{kolon, veri_tipi, uzunluk, nullable, pk, note, hints, ornek_degerler}, ...]
     ornek_degerler verilmişse LLM'e gitmeden önce maskelenir (bkz. rules.mask_sample).
+    examples: decisions.similar_decisions çıktısı — insan onaylı few-shot örnekleri.
     """
-    lines = [
+    lines = render_decision_examples(examples) + [
         f"ŞEMA: {schema or '-'}",
         f"TABLO: {table or '-'}",
         "",
@@ -110,7 +141,9 @@ def build_batch_prompt(schema: str, table: str, columns: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_multi_table_prompt(table_groups: list[tuple[str, str, list[dict]]]) -> str:
+def build_multi_table_prompt(
+    table_groups: list[tuple[str, str, list[dict]]], examples: list[dict] | None = None
+) -> str:
     """Birden fazla KÜÇÜK tabloyu TEK istekte birleştirir (toplam kolon sayısı
     config.BATCH_SIZE sınırına kadar) — çağrı sayısını azaltıp gecikmeyi düşürmek için.
 
@@ -121,7 +154,7 @@ def build_multi_table_prompt(table_groups: list[tuple[str, str, list[dict]]]) ->
     doğru tabloya eşlemesini (isim çakışması olsa bile) sağlar.
     """
     total = sum(len(cols) for _, _, cols in table_groups)
-    lines = [
+    lines = render_decision_examples(examples) + [
         f"Bu istekte {len(table_groups)} farklı tabloya ait kolon grubu var (toplam {total} "
         "kolon). Her bölümü YALNIZ kendi ŞEMA/TABLO bağlamıyla değerlendir; tablolar "
         "arasındaki kolonları birbirine karıştırma.",

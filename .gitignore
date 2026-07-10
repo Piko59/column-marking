@@ -17,3 +17,6 @@ benchmark_runs/
 .idea/
 Thumbs.db
 .DS_Store
+
+# Insan inceleme kararlari (yerel, hassas olabilir)
+review_decisions.json

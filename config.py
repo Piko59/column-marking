@@ -29,6 +29,24 @@ REASONING_EFFORT = os.getenv("REASONING_EFFORT", "low")
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "120"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 CACHE_FILE = os.getenv("CACHE_FILE", "classification_cache.json")
+# İnsan inceleme kararlarının (onayla/düzelt/nötr) kalıcı sözlüğü.
+DECISIONS_FILE = os.getenv("DECISIONS_FILE", "review_decisions.json")
+# Few-shot: her LLM çağrısına, o partideki kolonlara en benzer en fazla K insan-onaylı
+# karar örnek olarak eklenir (0 = kapalı). Havuz ne kadar büyürse büyüsün prompt'a giren
+# miktar K ile sınırlıdır — şişme yapısal olarak engellenir.
+FEWSHOT_K = int(os.getenv("FEWSHOT_K", "8"))
+# Bu benzerliğin (token Jaccard) altındaki kararlar örnek olarak alınmaz — alakasız
+# örnek, örneksizden kötüdür.
+FEWSHOT_MIN_SIM = float(os.getenv("FEWSHOT_MIN_SIM", "0.3"))
+
+# Yüklenebilecek maksimum Excel boyutu (MB) — bellek koruması.
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
+# Ham veri tablosu yüklemede örnekleme: kolon başına kaç örnek değer, kaç satır taranır.
+SAMPLE_VALUES_PER_COLUMN = int(os.getenv("SAMPLE_VALUES_PER_COLUMN", "5"))
+SAMPLE_SCAN_ROWS = int(os.getenv("SAMPLE_SCAN_ROWS", "500"))
+# Boş değilse tüm /api/* istekleri X-API-Token başlığında bu değeri taşımak zorundadır.
+# Localhost'ta gereksiz; uygulama ağda başka makinelere açılacaksa doldurun.
+APP_API_TOKEN = os.getenv("APP_API_TOKEN", "")
 
 # Süreç genelinde aynı anda kaç LLM isteği açık olabilir (llm.chat içindeki global
 # semafor). Birden fazla mod artık paralel koştuğundan (benchmark) bu tek, MERKEZİ

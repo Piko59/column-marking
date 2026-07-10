@@ -8,6 +8,7 @@ doğru tahmin ediliyordu?
 """
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable
 
 from classifier.pipeline import classify_rows
@@ -17,6 +18,45 @@ from . import dataset as ds
 DEFAULT_MODES = ["name_only", "content_only", "name_content"]
 
 ProgressCB = Callable[[int, int, str], Awaitable[None]] | None
+
+# Kalibrasyon (ECE) kovaları: modelin bildirdiği güven bu aralıklara bölünür ve her
+# kovada "ortalama güven - gerçek doğruluk" farkı ağırlıklı toplanır.
+_ECE_BINS = [(0.0, 0.7), (0.7, 0.85), (0.85, 0.93), (0.93, 1.001)]
+
+
+def _wilson_ci(k: int, n: int, z: float = 1.96) -> list[float] | None:
+    """Binom oranı için Wilson %95 güven aralığı — küçük örneklemde nokta tahminin
+    (örn. 6/6 = "%100") yanıltıcılığını raporda görünür kılar."""
+    if n == 0:
+        return None
+    p = k / n
+    denom = 1 + z * z / n
+    center = p + z * z / (2 * n)
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return [round((center - half) / denom, 4), round((center + half) / denom, 4)]
+
+
+def _calibration(metrics: list[dict]) -> dict:
+    """ECE + doğru/yanlış kararlarda ortalama güven. Güvenin hatayı AYIRT EDİP
+    edemediğini gösterir: iki ortalama birbirine yakınsa güven eşiğiyle insan
+    incelemesi önceliklendirilemez (hakem eşiği dahil)."""
+    scored = [(m["confidence"], m["ana_match"]) for m in metrics if not m["error"]]
+    if not scored:
+        return {"ece": None, "avg_conf_correct": None, "avg_conf_wrong": None}
+    ece = 0.0
+    for lo, hi in _ECE_BINS:
+        grp = [(c, ok) for c, ok in scored if lo <= c < hi]
+        if grp:
+            acc = sum(ok for _, ok in grp) / len(grp)
+            mean_conf = sum(c for c, _ in grp) / len(grp)
+            ece += len(grp) / len(scored) * abs(acc - mean_conf)
+    correct = [c for c, ok in scored if ok]
+    wrong = [c for c, ok in scored if not ok]
+    return {
+        "ece": round(ece, 4),
+        "avg_conf_correct": round(sum(correct) / len(correct), 4) if correct else None,
+        "avg_conf_wrong": round(sum(wrong) / len(wrong), 4) if wrong else None,
+    }
 
 
 def _row_metrics(truth: dict, pred: dict) -> dict:
@@ -44,13 +84,16 @@ def _aggregate(metrics: list[dict]) -> dict:
     n = len(metrics)
     if n == 0:
         return {
-            "n": 0, "ana_accuracy": None, "set_precision": None, "set_recall": None,
-            "set_f1": None, "teknik_accuracy": None, "avg_confidence": None,
-            "error_rate": None, "judge_rate": None,
+            "n": 0, "ana_accuracy": None, "ana_accuracy_ci95": None, "set_precision": None,
+            "set_recall": None, "set_f1": None, "teknik_accuracy": None,
+            "avg_confidence": None, "error_rate": None, "judge_rate": None,
+            "ece": None, "avg_conf_correct": None, "avg_conf_wrong": None,
         }
+    ana_correct = sum(m["ana_match"] for m in metrics)
     return {
         "n": n,
-        "ana_accuracy": round(sum(m["ana_match"] for m in metrics) / n, 4),
+        "ana_accuracy": round(ana_correct / n, 4),
+        "ana_accuracy_ci95": _wilson_ci(ana_correct, n),
         "set_precision": round(sum(m["set_precision"] for m in metrics) / n, 4),
         "set_recall": round(sum(m["set_recall"] for m in metrics) / n, 4),
         "set_f1": round(sum(m["set_f1"] for m in metrics) / n, 4),
@@ -58,6 +101,7 @@ def _aggregate(metrics: list[dict]) -> dict:
         "avg_confidence": round(sum(m["confidence"] for m in metrics) / n, 4),
         "error_rate": round(sum(m["error"] for m in metrics) / n, 4),
         "judge_rate": round(sum(1 for m in metrics if m["kaynak"] == "llm+hakem") / n, 4),
+        **_calibration(metrics),
     }
 
 

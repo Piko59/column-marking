@@ -4,18 +4,22 @@
 Arayüz:      http://localhost:8000
 """
 
+import datetime as _dt
 import io
+import re
 import unicodedata
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, Field
 
+import config
 from benchmark import dataset as bench_dataset
 from benchmark import jobs as bench_jobs
 from benchmark import store as bench_store
+from classifier import decisions
 from classifier.categories import CATEGORIES
 from classifier.pipeline import classify_rows
 from classifier.rules import analyze_column
@@ -23,6 +27,19 @@ from classifier.rules import analyze_column
 app = FastAPI(title="Kolon İşaretleme")
 
 MAX_ROWS_PER_REQUEST = 200  # frontend bu boyutta parçalar gönderir
+
+
+@app.middleware("http")
+async def api_token_guard(request: Request, call_next):
+    """APP_API_TOKEN doluysa /api/* isteklerinde X-API-Token başlığını zorunlu kılar.
+
+    Statik dosyalar (arayüzün kendisi) serbest kalır; token'ı arayüz kullanıcıdan
+    bir kez isteyip localStorage'da tutar (bkz. static/app.js api()).
+    """
+    if config.APP_API_TOKEN and request.url.path.startswith("/api/"):
+        if request.headers.get("X-API-Token") != config.APP_API_TOKEN:
+            return JSONResponse({"detail": "Geçersiz veya eksik API token."}, status_code=401)
+    return await call_next(request)
 
 
 # --- Yardımcılar ---------------------------------------------------------------
@@ -47,8 +64,23 @@ HEADER_RULES: list[tuple[str, list[str]]] = [
     ("nullable", ["null"]),
     ("pk", ["birincil", "primary", "pk"]),
     ("veri_tipi", ["veritipi", "datatype", "tip"]),
+    ("ornek_degerler", ["ornekdeger", "ornek", "sample", "icerik"]),
     ("kolon", ["kolonad", "kolon", "column"]),
 ]
+
+_SAMPLE_SPLIT_RE = re.compile(r"[;|\n]+|,\s")
+
+
+def _split_samples(raw: str) -> list[str]:
+    """Envanterdeki 'Örnek Değerler' hücresini listeye çevirir.
+
+    Ayraçlar: ; | ve satır sonu her zaman; virgül ise yalnız ardından boşluk geliyorsa
+    (adres gibi virgül içeren tek değerleri "1,5" gibi ondalıkları bölmemek için).
+    """
+    if not raw:
+        return []
+    parts = [p.strip() for p in _SAMPLE_SPLIT_RE.split(raw)]
+    return [p for p in parts if p][: config.SAMPLE_VALUES_PER_COLUMN * 2]
 
 
 def _map_headers(headers: list) -> dict[int, str]:
@@ -75,6 +107,31 @@ def _cell(v) -> str:
     if isinstance(v, float) and v.is_integer():
         return str(int(v))
     return str(v).strip()
+
+
+def _check_size_and_load(content: bytes):
+    if len(content) > config.MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(400, f"Dosya çok büyük (sınır: {config.MAX_UPLOAD_MB} MB).")
+    try:
+        return load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception:
+        raise HTTPException(400, "Dosya okunamadı; geçerli bir Excel dosyası değil.")
+
+
+def _infer_type(values: list) -> tuple[str, str]:
+    """Ham veri örneklerinden kaba (veri_tipi, uzunluk) çıkarımı."""
+    non_null = [v for v in values if v is not None and str(v).strip() != ""]
+    if not non_null:
+        return "", ""
+    if all(isinstance(v, bool) for v in non_null):
+        return "bit", ""
+    if all(isinstance(v, int) and not isinstance(v, bool) for v in non_null):
+        return "int", ""
+    if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in non_null):
+        return "decimal", ""
+    if all(isinstance(v, (_dt.date, _dt.datetime)) for v in non_null):
+        return "datetime" if any(isinstance(v, _dt.datetime) for v in non_null) else "date", ""
+    return "varchar", str(max(len(_cell(v)) for v in non_null))
 
 
 # --- Modeller ------------------------------------------------------------------
@@ -110,6 +167,14 @@ class ExportRequest(BaseModel):
     items: list[ExportRow]
 
 
+class ReviewRequest(BaseModel):
+    row: RowIn
+    action: str  # "onayla" | "duzelt" | "notr"
+    ana_kategori: int | None = None
+    kategoriler: list[int] = Field(default_factory=list)
+    orijinal: dict | None = None  # denetim izi: LLM'in düzeltme öncesi sonucu
+
+
 # --- Uçlar ----------------------------------------------------------------------
 
 @app.get("/api/categories")
@@ -119,14 +184,15 @@ def get_categories():
 
 @app.post("/api/upload")
 async def upload_excel(file: UploadFile = File(...)):
-    """Excel'i ayrıştırır ve normalize satır listesi döndürür (sınıflandırma yapmaz)."""
+    """Envanter Excel'ini ayrıştırır ve normalize satır listesi döndürür (sınıflandırma yapmaz).
+
+    İsteğe bağlı "Örnek Değerler" sütunu tanınır: hücredeki değerler (; | satır sonu veya
+    ", " ile ayrılmış) ornek_degerler listesine çevrilir ve sınıflandırmada maskeli
+    içerik sinyali olarak kullanılır.
+    """
     if not (file.filename or "").lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(400, "Lütfen .xlsx uzantılı bir dosya yükleyin.")
-    content = await file.read()
-    try:
-        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-    except Exception:
-        raise HTTPException(400, "Dosya okunamadı; geçerli bir Excel dosyası değil.")
+    wb = _check_size_and_load(await file.read())
     ws = wb.active
     rows_iter = ws.iter_rows(values_only=True)
     try:
@@ -136,17 +202,73 @@ async def upload_excel(file: UploadFile = File(...)):
     mapping = _map_headers(headers)
 
     rows = []
+    sampled = 0
     for raw in rows_iter:
-        row = {field: "" for field in RowIn.model_fields}
+        row: dict = {field: "" for field in RowIn.model_fields}
         for idx, field in mapping.items():
             if idx < len(raw):
                 row[field] = _cell(raw[idx])
+        row["ornek_degerler"] = _split_samples(row.get("ornek_degerler") or "")
+        sampled += bool(row["ornek_degerler"])
         if row["kolon"]:
             rows.append(row)
     wb.close()
     if not rows:
         raise HTTPException(400, "Dosyada sınıflandırılacak satır bulunamadı.")
-    return {"rows": rows, "count": len(rows)}
+    return {"rows": rows, "count": len(rows), "with_samples": sampled}
+
+
+@app.post("/api/upload-data")
+async def upload_data_table(file: UploadFile = File(...)):
+    """HAM VERİ tablosu yükler: her sayfanın ilk satırı kolon adları, altı gerçek veridir.
+
+    Sistem her kolondan en fazla SAMPLE_VALUES_PER_COLUMN benzersiz, boş olmayan örnek
+    değer toplar (ilk SAMPLE_SCAN_ROWS satırı tarar), veri tipini kabaca çıkarır ve
+    envanter formatında satırlar döndürür — sayfa adı tablo adı olur. Ham değerler
+    yalnızca sunucu belleğinde/istemcide kalır; LLM'e giderken maskelenir
+    (classifier/rules.mask_sample)."""
+    if not (file.filename or "").lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(400, "Lütfen .xlsx uzantılı bir dosya yükleyin.")
+    wb = _check_size_and_load(await file.read())
+
+    rows = []
+    for ws in wb.worksheets:
+        rows_iter = ws.iter_rows(values_only=True)
+        try:
+            headers = [_cell(h) for h in next(rows_iter)]
+        except StopIteration:
+            continue
+        if not any(headers):
+            continue
+        raw_samples: list[list] = [[] for _ in headers]
+        seen: list[set] = [set() for _ in headers]
+        for r_idx, raw in enumerate(rows_iter):
+            if r_idx >= config.SAMPLE_SCAN_ROWS:
+                break
+            for c_idx, v in enumerate(raw[: len(headers)]):
+                if len(raw_samples[c_idx]) >= config.SAMPLE_VALUES_PER_COLUMN:
+                    continue
+                s = _cell(v)
+                if s and s not in seen[c_idx]:
+                    seen[c_idx].add(s)
+                    raw_samples[c_idx].append(v)
+        for c_idx, header in enumerate(headers):
+            if not header:
+                continue
+            dtype, length = _infer_type(raw_samples[c_idx])
+            row = {field: "" for field in RowIn.model_fields}
+            row.update({
+                "tablo": ws.title, "kolon": header, "sira": str(c_idx + 1),
+                "veri_tipi": dtype, "uzunluk": length,
+                "ornek_degerler": [_cell(v) for v in raw_samples[c_idx]],
+            })
+            rows.append(row)
+    wb.close()
+    if not rows:
+        raise HTTPException(400, "Dosyada kolon başlığı içeren sayfa bulunamadı.")
+    tables = len({r["tablo"] for r in rows})
+    return {"rows": rows, "count": len(rows), "tables": tables,
+            "with_samples": sum(bool(r["ornek_degerler"]) for r in rows)}
 
 
 @app.post("/api/classify")
@@ -160,6 +282,29 @@ async def classify(req: ClassifyRequest):
         [r.model_dump() for r in req.rows], use_judge=req.use_judge, mode=req.mode
     )
     return {"results": results}
+
+
+@app.post("/api/review")
+def review(req: ReviewRequest):
+    """Bir kolonun sınıflandırmasına insan kararı işler.
+
+    onayla/duzelt → karar sözlüğüne yazılır; aynı (kolon adı, veri tipi) imzası bir
+    daha LLM'e gitmez. notr → yalnız "incelendi" kaydı; sınıflandırmaya etkisi yoktur.
+    """
+    try:
+        record = decisions.save_decision(
+            req.row.model_dump(), req.action,
+            ana_kategori=req.ana_kategori, kategoriler=req.kategoriler,
+            orijinal=req.orijinal,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"record": record, "stats": decisions.stats()}
+
+
+@app.get("/api/review/stats")
+def review_stats():
+    return decisions.stats()
 
 
 @app.post("/api/analyze")
@@ -181,7 +326,8 @@ def export_excel(req: ExportRequest):
     cat_headers = [f"{i}. {name}" for i, name in CATEGORIES.items()]
     ws.append(base_headers + cat_headers
               + ["Ana Kategori", "Olası Kategoriler", "Teknik Kolon",
-                 "Tahmini Açılım", "Güven", "Gerekçe", "Kaynak"])
+                 "Tahmini Açılım", "Güven", "Gerekçe", "Kaynak", "İnceleme"])
+    inceleme_map = {"onayla": "Onaylandı", "duzelt": "Düzeltildi", "notr": "Nötr"}
 
     for item in req.items:
         r, res = item.row, item.result or {}
@@ -198,7 +344,8 @@ def export_excel(req: ExportRequest):
                ", ".join(res.get("kategori_adlari") or []),
                1 if res.get("teknik") else 0,
                acilim,
-               res.get("guven", ""), res.get("gerekce", ""), res.get("kaynak", "")]
+               res.get("guven", ""), res.get("gerekce", ""), res.get("kaynak", ""),
+               inceleme_map.get(res.get("inceleme"), "")]
         )
 
     buf = io.BytesIO()

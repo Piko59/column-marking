@@ -88,11 +88,22 @@ Sistemleri ve Elektronik Bankacılık Hizmetleri Hakkında Yönetmelik ("hassas 
 
 ## Örnek Değerler (İçerik Sinyali)
 
-Kolon başına 3-5 örnek değer verilirse (`RowIn.ornek_degerler`), bunlar LLM'e
-gönderilmeden önce **maskelenir** (`rules.mask_sample`: uzunluk + ilk/son birkaç
-karakter korunur, ortası yıldızlanır — TCKN'nin 11 hane, IBAN'ın "TR" ile başlayıp
-26 karakter olması gibi biçim sinyalleri kalır, tam değer gitmez). `classify_rows`
-üç modu destekler:
+Örnek değerler üç yoldan girer ve LLM'e gönderilmeden önce **maskelenir**
+(`rules.mask_sample`, iki strateji): rakam ağırlıklı değerlerde uzunluk + ilk/son
+karakterler korunur, ortası yıldızlanır (TCKN'nin 11 hane, IBAN'ın "TR" öneki kalır);
+metinsel değerlerde (ad, din, kan grubu...) içerik hiç gösterilmez, yalnız desen gider
+(büyük harf→X, küçük harf→x, rakam→9: "0 Rh+" → "9 Xx+").
+
+Giriş yolları:
+1. **Envanter Excel'inde "Örnek Değerler" sütunu** — hücrede `;` `|` veya ", " ile
+   ayrılmış değerler.
+2. **Ham veri tablosu yükleme** (arayüzde "Ham veri tablosu" seçeneği veya
+   `POST /api/upload-data`) — her sayfanın ilk satırı kolon adı, altı gerçek veri;
+   sistem kolon başına en fazla `SAMPLE_VALUES_PER_COLUMN` benzersiz değeri örnekler,
+   veri tipini kabaca çıkarır; sayfa adı tablo adı olur.
+3. Tekil sorgu formundaki "Örnek Değerler" alanı.
+
+`classify_rows` üç modu destekler:
 
 | mode | isim | içerik | ne zaman |
 |---|---|---|---|
@@ -147,6 +158,51 @@ static/                  arayüz (index.html, style.css, app.js) — Excel / Tek
 classification_cache.json  otomatik oluşan sonuç önbelleği (model+prompt versiyonuna bağlı)
 benchmark_runs/          otomatik oluşan benchmark koşu geçmişi (.gitignore'da)
 ```
+
+## İnsan İnceleme (Onayla / Düzelt / Nötr)
+
+Sonuç tablosundaki her satırda üç inceleme düğmesi vardır:
+
+- **✓ Onayla** — LLM sonucunu doğrular; karar kalıcı **karar sözlüğüne**
+  (`review_decisions.json`) yazılır. Aynı kolon imzası (kolon adı + veri tipi —
+  bilinçli olarak tablo değil, çünkü aynı kolon adı yüzlerce tabloda tekrarlanır)
+  bir daha geldiğinde LLM'e hiç gitmeden sözlükten döner (kaynak = `sozluk`,
+  güven = 1.0).
+- **✎ Düzelt** — açılan panelde olası kategorileri ve ana kategoriyi siz
+  belirlersiniz; düzeltilmiş hâli sözlüğe yazılır ve satıra uygulanır
+  (kaynak = `insan`). LLM'in orijinal kararı denetim izi olarak kayıtta saklanır.
+- **— Nötr** — yalnızca "incelendi" kaydı düşer; sınıflandırmaya, sözlük aramasına
+  ve dışa aktarılan kategorilere **hiçbir etkisi yoktur**. Alan uzmanı olmayan bir
+  gözden geçirenin sonucu etkilemeden ilerlemesi içindir.
+
+### Few-shot: benzer kararların LLM'e örnek gösterilmesi
+
+Birebir imza eşleşmesi yoksa bile, her LLM çağrısına o partideki kolon adlarına
+**en benzer en fazla `FEWSHOT_K` (varsayılan 8) onaylı/düzeltilmiş karar** örnek
+olarak eklenir — "İNSAN ONAYLI ÖNCEKİ KARARLAR (yol gösterici, bağlayıcı değil)"
+bloğu. Örn. `mhIbanNo` onaylandıysa, `klaIbanNo` geldiğinde model bu kararı görür
+ama kendi kararını verir (kaynak yine `llm`; güven=1.0 damgası yalnız birebir
+imza eşleşmesine özeldir).
+
+Şişme ve bozulma korumaları:
+- Benzerlik = kolon adı token kümelerinin Jaccard'ı (+ veri tipi bonusu);
+  `FEWSHOT_MIN_SIM` (0.3) altındakiler hiç eklenmez — alakasız örnek girmez.
+- Havuz kaç kayda büyürse büyüsün prompt'a giren örnek ≤ K (~400 token, sabit).
+- Nötr kayıtlar havuzda yoktur; benchmark modları bloğu hiç görmez.
+- `FEWSHOT_K=0` özelliği tamamen kapatır.
+
+İnceleme durumu Excel çıktısına "İnceleme" sütunu olarak yazılır
+(Onaylandı / Düzeltildi / Nötr). Karar sözlüğü `.gitignore`'dadır ve
+`DECISIONS_FILE` ile taşınabilir. Sözlük yalnız üretim modunda (`name_content`)
+devreye girer; benchmark modları ölçümü kirletmemek için sözlüğü yok sayar.
+
+## Güvenlik Notları
+
+- `APP_API_TOKEN` doluysa tüm `/api/*` istekleri `X-API-Token` başlığı ister
+  (arayüz token'ı bir kez sorup tarayıcıda saklar). Localhost'ta gerekmez.
+- Yükleme boyutu `MAX_UPLOAD_MB` (varsayılan 25 MB) ile sınırlıdır.
+- Benchmark skor kartlarında ana doğruluk artık Wilson %95 güven aralığı, ECE
+  (kalibrasyon) ve doğru/yanlış kararlardaki ortalama güven ile raporlanır.
 
 ## Excel Formatı
 

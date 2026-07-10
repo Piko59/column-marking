@@ -32,7 +32,14 @@
         <div class="dropzone-icon">⬆</div>
         <p class="dropzone-title">Excel dosyasını buraya sürükleyin</p>
         <p class="dropzone-sub">veya <button type="button" class="linklike" id="browseBtn">dosya seçin</button> (.xlsx)</p>
-        <p class="dropzone-hint">Beklenen sütunlar: Sunucu, Veri Tabanı, Şema, Tablo Ad, Kolon Ad, Veri Tipi, Null Flag, PK Flag</p>
+        <div class="upload-kind">
+          <label class="checkbox"><input type="radio" name="uploadKind" value="inventory" checked>
+            <span><b>Envanter dosyası</b> — her satır bir kolonu tanımlar (isteğe bağlı "Örnek Değerler" sütunu desteklenir)</span></label>
+          <label class="checkbox"><input type="radio" name="uploadKind" value="data">
+            <span><b>Ham veri tablosu</b> — ilk satır kolon adları, altı gerçek veri; her sayfa ayrı tablo sayılır, örnek değerler otomatik toplanır</span></label>
+        </div>
+        <p class="dropzone-hint">Envanter sütunları: Sunucu, Veri Tabanı, Şema, Tablo Ad, Kolon Ad, Veri Tipi, Null Flag, PK Flag, Örnek Değerler.
+          Örnek değerler LLM'e yalnızca <b>maskelenmiş</b> olarak gönderilir.</p>
         <input type="file" id="fileInput" accept=".xlsx,.xlsm" hidden>
       </div>
 
@@ -81,6 +88,7 @@
               <tr>
                 <th>#</th><th>Şema</th><th>Tablo</th><th>Kolon</th><th>Açılım</th>
                 <th>Veri Tipi</th><th>PK</th><th>Kategoriler</th><th>Güven</th><th>Gerekçe</th>
+                <th title="Onayla: sonuç doğrulanır ve karar sözlüğüne yazılır. Düzelt: kategorileri siz belirlersiniz. Nötr: yalnız 'incelendi' kaydı, hiçbir etkisi yoktur.">İnceleme</th>
               </tr>
             </thead>
             <tbody id="gridBody"></tbody>
@@ -128,6 +136,9 @@
                 <option value="1">1 — Primary Key</option>
                 <option value="0">0 — PK değil</option>
               </select>
+            </label>
+            <label style="grid-column: 1 / -1">Örnek Değerler <span class="dim">(isteğe bağlı; ; veya | ile ayırın — LLM'e maskeli gider)</span>
+              <input name="ornek_degerler_raw" placeholder="örn. TR330006100519786457841326; TR560011100000000012345678">
             </label>
           </div>
           <button type="submit" class="btn btn-primary" id="singleSubmit">Sınıflandır</button>
@@ -244,6 +255,23 @@
   <footer class="footer">
     <span>Aşama 1: kural analizi + toplu LLM &nbsp;·&nbsp; Aşama 2: düşük güvenlilere hakem geçişi &nbsp;·&nbsp; Her çalıştırmada yeniden değerlendirilir</span>
   </footer>
+
+  <!-- Düzeltme paneli (Düzelt düğmesiyle açılır) -->
+  <div id="reviewModal" class="modal-overlay hidden">
+    <div class="modal">
+      <h2>Sınıflandırmayı Düzelt — <span id="rvKolon" class="mono"></span></h2>
+      <p class="dim" style="margin-top:0">Doğru olası kategorileri işaretleyin ve ana kategoriyi seçin.
+        Karar, aynı kolon adı + veri tipi imzası için kalıcı olarak uygulanır.</p>
+      <div id="rvCats" class="rv-cats"></div>
+      <label class="rv-ana-label">Ana Kategori
+        <select id="rvAna" class="select"></select>
+      </label>
+      <div class="modal-actions">
+        <button id="rvCancel" class="btn btn-ghost">Vazgeç</button>
+        <button id="rvSave" class="btn btn-primary">Kaydet</button>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

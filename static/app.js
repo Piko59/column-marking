@@ -35,10 +35,23 @@ function toast(msg, isError = false) {
 }
 
 async function api(path, options = {}) {
-  const resp = await fetch(path, options);
+  // Sunucu APP_API_TOKEN ile korunuyorsa token'ı bir kez sorup localStorage'da tut
+  const headers = { ...(options.headers || {}) };
+  const saved = localStorage.getItem("apiToken");
+  if (saved) headers["X-API-Token"] = saved;
+  let resp = await fetch(path, { ...options, headers });
+  if (resp.status === 401) {
+    const entered = prompt("Bu sunucu API token istiyor. Token'ı girin:");
+    if (entered) {
+      localStorage.setItem("apiToken", entered);
+      headers["X-API-Token"] = entered;
+      resp = await fetch(path, { ...options, headers });
+    }
+  }
   if (!resp.ok) {
     let detail = `HTTP ${resp.status}`;
     try { detail = (await resp.json()).detail || detail; } catch { /* yut */ }
+    if (resp.status === 401) localStorage.removeItem("apiToken");
     throw new Error(detail);
   }
   return resp;
@@ -67,10 +80,115 @@ function confHtml(result) {
   if (!result || result.kaynak === "hata") return "";
   const v = result.guven;
   const cls = v < 0.6 ? "low" : v < 0.8 ? "mid" : "high";
-  const src = result.kaynak === "llm+hakem" ? "hakem" : result.kaynak === "cache" ? "önbellek" : "";
+  const src = { "llm+hakem": "hakem", cache: "önbellek", sozluk: "sözlük", insan: "insan" }[result.kaynak] || "";
   return `<span class="conf ${cls}">${v.toFixed(2)}</span>` +
          (src ? `<span class="src-tag">${src}</span>` : "");
 }
+
+// ============ İnsan inceleme (Onayla / Düzelt / Nötr) ============
+const REVIEW_LABELS = { onayla: "Onaylandı", duzelt: "Düzeltildi", notr: "Nötr" };
+
+function reviewHtml(result, idx) {
+  if (!result || result.kaynak === "hata") return "";
+  const a = result.inceleme;
+  return `<span class="rv-group" data-idx="${idx}">
+    <button class="rv-btn ok ${a === "onayla" ? "active" : ""}" data-action="onayla"
+      title="Onayla: sonucu doğrular, karar sözlüğüne yazar">✓</button>
+    <button class="rv-btn edit ${a === "duzelt" ? "active" : ""}" data-action="duzelt"
+      title="Düzelt: kategorileri siz belirlersiniz">✎</button>
+    <button class="rv-btn neutral ${a === "notr" ? "active" : ""}" data-action="notr"
+      title="Nötr: yalnız 'incelendi' kaydı — hiçbir etkisi yoktur">—</button>
+  </span>`;
+}
+
+// Genel inceleme kaydı: hem Excel tablosu hem tekil sorgu bu çekirdeği kullanır.
+// row/res doğrudan verilir; onDone başarıda ilgili görünümü yeniden çizer.
+async function submitReviewCore(row, res, action, correction, onDone) {
+  const body = { row, action };
+  if (action === "onayla") {
+    body.ana_kategori = res.ana_kategori;
+    body.kategoriler = res.kategoriler;
+  } else if (action === "duzelt") {
+    body.ana_kategori = correction.ana_kategori;
+    body.kategoriler = correction.kategoriler;
+    body.orijinal = { ana_kategori: res.ana_kategori, kategoriler: res.kategoriler, guven: res.guven };
+  }
+  try {
+    await api("/api/review", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    res.inceleme = action;
+    if (action === "duzelt") {
+      res.ana_kategori = correction.ana_kategori;
+      res.kategoriler = correction.kategoriler;
+      res.kategori_adlari = correction.kategoriler.map((c) => state.categories[c] || String(c));
+      res.guven = 1.0;
+      res.kaynak = "insan";
+      res.teknik = false;
+    }
+    onDone();
+    toast(action === "notr" ? "Nötr olarak işaretlendi (etkisiz)." : `Kayıt: ${REVIEW_LABELS[action]}.`);
+  } catch (err) {
+    toast("İnceleme kaydedilemedi: " + err.message, true);
+  }
+}
+
+function submitReview(idx, action, correction = null) {
+  return submitReviewCore(state.rows[idx], state.results[idx], action, correction, () => {
+    updateStats();
+    renderTable();
+  });
+}
+
+// Tıklama delegasyonu: sayfalama yeniden çizdiği için düğmelere tek tek listener bağlanmaz
+$("gridBody").addEventListener("click", (e) => {
+  const btn = e.target.closest(".rv-btn");
+  if (!btn) return;
+  const idx = Number(btn.closest(".rv-group").dataset.idx);
+  const action = btn.dataset.action;
+  if (action === "duzelt") openReviewModal(idx);
+  else submitReview(idx, action);
+});
+
+// --- Düzeltme paneli (tablo ve tekil sorgu ortak kullanır) ---
+let rvTarget = null; // {row, res, onDone}
+
+function openReviewModalFor(row, res, onDone) {
+  rvTarget = { row, res, onDone };
+  $("rvKolon").textContent = row.kolon;
+  $("rvCats").innerHTML = Object.entries(state.categories).map(([id, name]) => `
+    <label class="checkbox"><input type="checkbox" class="rvCat" value="${id}"
+      ${res.kategoriler.includes(Number(id)) ? "checked" : ""}>
+      <span class="badge c${id}">${id}. ${esc(name)}</span></label>`).join("");
+  const sel = $("rvAna");
+  sel.innerHTML = Object.entries(state.categories)
+    .map(([id, name]) => `<option value="${id}" ${Number(id) === res.ana_kategori ? "selected" : ""}>${id}. ${esc(name)}</option>`)
+    .join("");
+  $("reviewModal").classList.remove("hidden");
+}
+
+function openReviewModal(idx) {
+  openReviewModalFor(state.rows[idx], state.results[idx], () => {
+    updateStats();
+    renderTable();
+  });
+}
+
+$("rvCancel").addEventListener("click", () => $("reviewModal").classList.add("hidden"));
+$("reviewModal").addEventListener("click", (e) => {
+  if (e.target === $("reviewModal")) $("reviewModal").classList.add("hidden");
+});
+$("rvSave").addEventListener("click", () => {
+  const ana = Number($("rvAna").value);
+  const cats = [...document.querySelectorAll(".rvCat:checked")].map((c) => Number(c.value));
+  if (!cats.includes(ana)) cats.push(ana);
+  cats.sort((a, b) => a - b);
+  $("reviewModal").classList.add("hidden");
+  if (rvTarget) {
+    submitReviewCore(rvTarget.row, rvTarget.res, "duzelt",
+      { ana_kategori: ana, kategoriler: cats }, rvTarget.onDone);
+  }
+});
 
 // ============ Sekmeler ============
 document.querySelectorAll(".tab").forEach((btn) => {
@@ -94,16 +212,22 @@ $("fileInput").addEventListener("change", (e) => e.target.files[0] && handleFile
 );
 
 async function handleFile(file) {
+  const isRawData = document.querySelector('input[name="uploadKind"]:checked').value === "data";
   const fd = new FormData();
   fd.append("file", file);
   toast("Dosya yükleniyor…");
   try {
-    const data = await (await api("/api/upload", { method: "POST", body: fd })).json();
+    const endpoint = isRawData ? "/api/upload-data" : "/api/upload";
+    const data = await (await api(endpoint, { method: "POST", body: fd })).json();
     state.rows = data.rows;
     state.results = new Array(data.rows.length).fill(null);
     state.page = 1;
     state.fileName = file.name;
-    $("fileInfo").textContent = `${file.name} — ${data.count.toLocaleString("tr")} satır`;
+    const extra = [];
+    if (data.tables) extra.push(`${data.tables} tablo`);
+    if (data.with_samples) extra.push(`${data.with_samples} kolonda örnek değer`);
+    $("fileInfo").textContent = `${file.name} — ${data.count.toLocaleString("tr")} satır`
+      + (extra.length ? ` (${extra.join(", ")})` : "");
     dropzone.classList.add("hidden");
     $("workspace").classList.remove("hidden");
     $("exportBtn").disabled = true;
@@ -215,6 +339,7 @@ function setProgress(done, total) {
 function updateStats() {
   const bar = $("statsBar");
   const counts = {};
+  const rev = { onayla: 0, duzelt: 0, notr: 0 };
   let classified = 0, none = 0, errors = 0, lowConf = 0;
   state.results.forEach((r) => {
     if (!r) return;
@@ -223,7 +348,9 @@ function updateStats() {
     if (!r.kategoriler.length) none++;
     if (r.guven < 0.6) lowConf++;
     if (r.ana_kategori) counts[r.ana_kategori] = (counts[r.ana_kategori] || 0) + 1;
+    if (r.inceleme) rev[r.inceleme]++;
   });
+  const reviewed = rev.onayla + rev.duzelt + rev.notr;
   if (!classified && !errors) { bar.classList.add("hidden"); return; }
   bar.classList.remove("hidden");
   const chips = [
@@ -234,6 +361,8 @@ function updateStats() {
     `<span class="stat-chip">Kategorisiz: <b>${none}</b></span>`,
     `<span class="stat-chip">Düşük güven: <b>${lowConf}</b></span>`,
   ];
+  if (reviewed) chips.push(
+    `<span class="stat-chip">İncelenen: <b>${reviewed}</b> (✓${rev.onayla} ✎${rev.duzelt} —${rev.notr})</span>`);
   if (errors) chips.push(`<span class="stat-chip">Hatalı: <b>${errors}</b></span>`);
   bar.innerHTML = chips.join("");
 }
@@ -274,15 +403,17 @@ function renderTable() {
       <td class="dim">${i + 1}</td>
       <td class="dim">${esc(r.sema)}</td>
       <td>${esc(r.tablo)}</td>
-      <td class="mono">${esc(r.kolon)}</td>
+      <td class="mono">${esc(r.kolon)}${(r.ornek_degerler && r.ornek_degerler.length)
+        ? ` <span class="badge tek" title="İçerik sinyali var: ${r.ornek_degerler.length} örnek değer (maskeli gönderilir)">${r.ornek_degerler.length}⛁</span>` : ""}</td>
       <td class="dim">${acilimHtml(res)}</td>
       <td class="dim">${esc(r.veri_tipi)}${r.uzunluk ? "(" + esc(r.uzunluk) + ")" : ""}</td>
       <td class="dim">${r.pk === "1" ? "PK" : ""}</td>
       <td>${badgeHtml(res)}</td>
       <td>${confHtml(res)}</td>
       <td class="reason">${esc(res ? res.gerekce : "")}</td>
+      <td>${reviewHtml(res, i)}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="10" class="dim" style="text-align:center;padding:24px">Eşleşen satır yok</td></tr>`;
+  }).join("") || `<tr><td colspan="11" class="dim" style="text-align:center;padding:24px">Eşleşen satır yok</td></tr>`;
 
   $("pageInfo").textContent = `Sayfa ${state.page} / ${pages} — ${idxs.length.toLocaleString("tr")} satır`;
   $("prevPage").disabled = state.page <= 1;
@@ -315,6 +446,10 @@ $("singleForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const btn = $("singleSubmit");
   const row = Object.fromEntries(new FormData(e.target).entries());
+  // Serbest metin örnek değerleri listeye çevir (backend list[str] bekler)
+  row.ornek_degerler = (row.ornek_degerler_raw || "")
+    .split(/[;|\n]+/).map((s) => s.trim()).filter(Boolean).slice(0, 10);
+  delete row.ornek_degerler_raw;
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>Sınıflandırılıyor…';
   try {
@@ -337,7 +472,10 @@ $("singleForm").addEventListener("submit", async (e) => {
   }
 });
 
+let lastSingle = null; // {row, result, analysis} — inceleme düğmeleri için
+
 function renderSingleResult(row, result, analysis) {
+  lastSingle = { row, result, analysis };
   const hints = Object.entries(analysis.hints || {});
   $("singleResultBody").innerHTML = `
     <div class="result-block">
@@ -361,9 +499,23 @@ function renderSingleResult(row, result, analysis) {
       </ul></div>` : ""}
     ${result.ilk_deneme ? `<div class="result-block"><h3>Hakem Öncesi İlk Deneme</h3>
       <div class="result-reason dim">kategoriler: [${result.ilk_deneme.kategoriler.join(", ")}] — güven: ${result.ilk_deneme.guven}</div></div>` : ""}
+    <div class="result-block"><h3>İnceleme</h3>
+      ${reviewHtml(result, "single")}
+      ${result.inceleme ? `<span class="dim" style="margin-left:8px">${REVIEW_LABELS[result.inceleme]}</span>` : ""}
+    </div>
   `;
   $("singleResult").classList.remove("hidden");
 }
+
+// Tekil sorgu sonucundaki inceleme düğmeleri (tablo ile aynı çekirdeği kullanır)
+$("singleResultBody").addEventListener("click", (e) => {
+  const btn = e.target.closest(".rv-btn");
+  if (!btn || !lastSingle) return;
+  const action = btn.dataset.action;
+  const redraw = () => renderSingleResult(lastSingle.row, lastSingle.result, lastSingle.analysis);
+  if (action === "duzelt") openReviewModalFor(lastSingle.row, lastSingle.result, redraw);
+  else submitReviewCore(lastSingle.row, lastSingle.result, action, null, redraw);
+});
 
 // ============ Benchmark ============
 const BENCH_MODE_LABELS = { name_only: "Yalnız İsim", content_only: "Yalnız İçerik", name_content: "İsim + İçerik" };
