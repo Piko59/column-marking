@@ -365,6 +365,274 @@ function renderSingleResult(row, result, analysis) {
   $("singleResult").classList.remove("hidden");
 }
 
+// ============ Benchmark ============
+const BENCH_MODE_LABELS = { name_only: "Yalnız İsim", content_only: "Yalnız İçerik", name_content: "İsim + İçerik" };
+const BENCH_BUCKETS = ["1", "2", "3", "4", "5", "6", "7", "teknik"];
+const benchState = { detail: [] };
+let benchPollTimer = null;
+
+function modeLabel(m) { return BENCH_MODE_LABELS[m] || m; }
+function bucketLabel(b) { return b === "teknik" ? "Teknik/İşlemsel" : `${b}. ${state.categories[b] || ""}`; }
+function pct(v) { return v == null ? "-" : (v * 100).toFixed(1) + "%"; }
+function catLabel(id) { return id ? `${id}. ${state.categories[id] || ""}` : "-"; }
+
+function accuracyColor(v) {
+  if (v == null) return "#9aa3b2";
+  // Sabit durum paleti (kritik → uyarı → iyi) — dataviz palette.md, hiç temalanmaz
+  const stops = [[0, [208, 59, 59]], [0.5, [250, 178, 25]], [1, [12, 163, 12]]];
+  let lo = stops[0], hi = stops[stops.length - 1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (v >= stops[i][0] && v <= stops[i + 1][0]) { lo = stops[i]; hi = stops[i + 1]; break; }
+  }
+  const t = (v - lo[0]) / ((hi[0] - lo[0]) || 1);
+  const c = lo[1].map((ch, i) => Math.round(ch + (hi[1][i] - ch) * t));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+async function loadBenchDatasetInfo() {
+  try {
+    const data = await (await api("/api/benchmark/dataset")).json();
+    $("benchDatasetInfo").innerHTML = `
+      <span class="stat-chip">Toplam satır: <b>${data.total_rows}</b></span>
+      <span class="stat-chip">Kavram: <b>${data.concepts}</b></span>
+      <span class="stat-chip">Kova başına: <b>${data.rows_per_bucket_per_group}</b> isimli + <b>${data.rows_per_bucket_per_group}</b> rastgele</span>
+      <span class="stat-chip">Kova sayısı: <b>${data.buckets.length}</b> (7 kategori + teknik)</span>`;
+  } catch { /* kritik değil, sessiz geç */ }
+}
+
+function renderBenchCards(perMode, modes) {
+  $("benchCards").innerHTML = modes.map((m) => {
+    const o = perMode[m]?.overall || {};
+    return `<div class="bench-card">
+      <h3>${esc(modeLabel(m))}</h3>
+      <div class="bench-big"><span class="heatmap-cell" style="background:${accuracyColor(o.ana_accuracy)};font-size:22px;padding:3px 12px">${pct(o.ana_accuracy)}</span></div>
+      <div class="bench-sub">
+        <span>Küme F1: <b>${pct(o.set_f1)}</b></span>
+        <span>Teknik doğruluk: <b>${pct(o.teknik_accuracy)}</b></span>
+        <span>Ort. güven: <b>${o.avg_confidence != null ? o.avg_confidence.toFixed(2) : "-"}</b></span>
+        <span>Hata oranı: <b>${pct(o.error_rate)}</b></span>
+        <span>Hakem oranı: <b>${pct(o.judge_rate)}</b></span>
+        <span>n=<b>${o.n ?? "-"}</b></span>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function renderHeatmap(perMode, modes) {
+  let html = "<thead><tr><th>Kova</th>" + modes.map((m) => `<th>${esc(modeLabel(m))}</th>`).join("") + "</tr></thead><tbody>";
+  BENCH_BUCKETS.forEach((b) => {
+    html += `<tr><td>${esc(bucketLabel(b))}</td>`;
+    modes.forEach((m) => {
+      const agg = perMode[m]?.by_bucket?.[b];
+      if (!agg || !agg.n) { html += `<td><span class="heatmap-cell na">—</span></td>`; return; }
+      html += `<td><span class="heatmap-cell" style="background:${accuracyColor(agg.ana_accuracy)}" title="n=${agg.n}">${(agg.ana_accuracy * 100).toFixed(0)}%</span></td>`;
+    });
+    html += "</tr>";
+  });
+  $("benchHeatmap").innerHTML = html + "</tbody>";
+}
+
+function renderChart(perMode, modes) {
+  const w = 640, h = 220, padL = 40, padB = 30, padT = 10, padR = 10;
+  const groupW = (w - padL - padR) / modes.length;
+  const barW = Math.min(48, groupW * 0.28);
+  const gap = 10;
+  const namedColor = "#2a78d6", randomColor = "#1baf7a"; // dataviz kategorik paleti, slot 1+2 (doğrulandı)
+  let bars = "";
+  modes.forEach((m, i) => {
+    const cx = padL + groupW * i + groupW / 2;
+    const series = [
+      ["İsimli", perMode[m]?.by_group?.named?.ana_accuracy ?? 0, namedColor, cx - gap / 2 - barW],
+      ["Rastgele", perMode[m]?.by_group?.random?.ana_accuracy ?? 0, randomColor, cx + gap / 2],
+    ];
+    series.forEach(([label, v, color, x]) => {
+      const barH = (h - padT - padB) * v;
+      const y = h - padB - barH;
+      bars += `<rect x="${x}" y="${y}" width="${barW}" height="${Math.max(barH, 1)}" rx="4" fill="${color}"><title>${label} — ${modeLabel(m)}: ${(v * 100).toFixed(1)}%</title></rect>`;
+      bars += `<text x="${x + barW / 2}" y="${y - 6}" text-anchor="middle" font-size="11" fill="#1c2330" font-weight="600">${(v * 100).toFixed(0)}%</text>`;
+    });
+    bars += `<text x="${cx}" y="${h - padB + 18}" text-anchor="middle" font-size="12" fill="#6b7484">${esc(modeLabel(m))}</text>`;
+  });
+  let grid = "";
+  [0, 0.25, 0.5, 0.75, 1].forEach((g) => {
+    const y = h - padB - (h - padT - padB) * g;
+    grid += `<line x1="${padL}" y1="${y}" x2="${w - padR}" y2="${y}" stroke="#e2e5ea" stroke-width="1"/>`;
+    grid += `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="#9aa3b2">${(g * 100).toFixed(0)}%</text>`;
+  });
+  $("benchChart").innerHTML = `
+    <div class="bench-legend">
+      <span><i style="background:${namedColor}"></i>İsimli</span>
+      <span><i style="background:${randomColor}"></i>Rastgele</span>
+    </div>
+    <svg viewBox="0 0 ${w} ${h}" style="width:100%;max-width:${w}px;height:auto">${grid}${bars}</svg>`;
+}
+
+function renderDependency(pairing, modes) {
+  const chips = modes.map((m) => {
+    const p = pairing[m];
+    if (!p) return "";
+    return `<span class="stat-chip" title="${p.n_concepts} kavramdan ${p.only_named_correct} tanesi yalnız isimle doğru">
+      ${esc(modeLabel(m))}: <b>${p.name_dependency_rate != null ? (p.name_dependency_rate * 100).toFixed(1) + "%" : "-"}</b></span>`;
+  }).join("");
+  $("benchDependency").innerHTML = chips || '<span class="dim">Veri yok</span>';
+}
+
+function populateBenchFilters(modes) {
+  $("benchFilterMode").innerHTML = '<option value="">Tüm modlar</option>'
+    + modes.map((m) => `<option value="${m}">${esc(modeLabel(m))}</option>`).join("");
+  $("benchFilterBucket").innerHTML = '<option value="">Tüm kategoriler</option>'
+    + BENCH_BUCKETS.map((b) => `<option value="${b}">${esc(bucketLabel(b))}</option>`).join("");
+}
+
+function benchFilteredDetail() {
+  const mode = $("benchFilterMode").value, group = $("benchFilterGroup").value;
+  const bucket = $("benchFilterBucket").value, status = $("benchFilterStatus").value;
+  return (benchState.detail || []).filter((d) => {
+    if (mode && d.mode !== mode) return false;
+    if (group && d.group !== group) return false;
+    if (bucket && d.bucket !== bucket) return false;
+    if (status === "correct" && !d.metrics.ana_match) return false;
+    if (status === "wrong" && d.metrics.ana_match) return false;
+    return true;
+  });
+}
+
+function renderBenchDetailTable() {
+  const rows = benchFilteredDetail().slice(0, 500);
+  $("benchDetailBody").innerHTML = rows.map((d) => `
+    <tr>
+      <td class="dim">${esc(modeLabel(d.mode))}</td>
+      <td class="dim">${d.group === "named" ? "İsimli" : "Rastgele"}</td>
+      <td class="mono">${esc(d.concept)}</td>
+      <td class="dim">${esc(bucketLabel(d.bucket))}</td>
+      <td>${esc(catLabel(d.truth.ana_kategori))}</td>
+      <td>${esc(catLabel(d.pred.ana_kategori))}</td>
+      <td>${d.metrics.ana_match ? '<span class="conf high">✓</span>' : '<span class="conf low">✗</span>'}</td>
+      <td>${confHtml(d.pred)}</td>
+      <td class="dim">${esc(d.pred.kaynak || "")}</td>
+    </tr>`).join("")
+    || `<tr><td colspan="9" class="bench-empty">Eşleşen satır yok</td></tr>`;
+}
+
+["benchFilterMode", "benchFilterGroup", "benchFilterBucket", "benchFilterStatus"].forEach((id) =>
+  $(id).addEventListener("change", renderBenchDetailTable));
+
+function renderBenchRun(run) {
+  const result = run.result;
+  benchState.detail = result.detail;
+  $("benchResults").classList.remove("hidden");
+  renderBenchCards(result.per_mode, result.modes);
+  renderHeatmap(result.per_mode, result.modes);
+  renderChart(result.per_mode, result.modes);
+  renderDependency(result.pairing, result.modes);
+  populateBenchFilters(result.modes);
+  renderBenchDetailTable();
+}
+
+async function loadBenchHistory() {
+  try {
+    const data = await (await api("/api/benchmark/runs")).json();
+    const rows = data.runs || [];
+    $("benchHistoryBody").innerHTML = rows.map((r) => {
+      const nc = r.summary?.per_mode?.name_content?.ana_accuracy;
+      return `<tr class="bench-history-row">
+        <td class="dim">${esc(new Date(r.started_at).toLocaleString("tr"))}</td>
+        <td class="dim">${(r.modes || []).map(modeLabel).join(", ")}</td>
+        <td class="dim">${r.use_judge ? "Açık" : "Kapalı"}</td>
+        <td class="mono dim">${esc(r.model || "")}</td>
+        <td class="dim">${r.elapsed_seconds != null ? r.elapsed_seconds + "sn" : "-"}</td>
+        <td>${nc != null ? (nc * 100).toFixed(1) + "%" : "-"}</td>
+        <td>
+          <button class="btn btn-ghost bench-view-btn" data-run="${esc(r.run_id)}">Görüntüle</button>
+          <button class="btn btn-ghost bench-del-btn" data-run="${esc(r.run_id)}">Sil</button>
+        </td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="7" class="bench-empty">Henüz koşu yok</td></tr>`;
+
+    document.querySelectorAll(".bench-view-btn").forEach((btn) => btn.addEventListener("click", async () => {
+      try {
+        const run = await (await api(`/api/benchmark/runs/${btn.dataset.run}`)).json();
+        renderBenchRun(run);
+        $("benchResults").scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (err) { toast("Koşu yüklenemedi: " + err.message, true); }
+    }));
+    document.querySelectorAll(".bench-del-btn").forEach((btn) => btn.addEventListener("click", async () => {
+      if (!confirm("Bu koşuyu silmek istediğinize emin misiniz?")) return;
+      try {
+        await api(`/api/benchmark/runs/${btn.dataset.run}`, { method: "DELETE" });
+        await loadBenchHistory();
+      } catch (err) { toast("Silinemedi: " + err.message, true); }
+    }));
+  } catch (err) {
+    toast("Geçmiş yüklenemedi: " + err.message, true);
+  }
+}
+
+function pollBenchJob(jobId) {
+  clearInterval(benchPollTimer);
+  benchPollTimer = setInterval(async () => {
+    try {
+      const job = await (await api(`/api/benchmark/jobs/${jobId}`)).json();
+      if (job.progress) {
+        const { step, total, mode } = job.progress;
+        $("benchProgressFill").style.width = total ? (step / total * 100) + "%" : "0%";
+        $("benchProgressText").textContent = mode
+          ? `Mod ${step}/${total}: ${modeLabel(mode)} tamamlandı…`
+          : `Başlatılıyor… (0/${total})`;
+      }
+      if (job.status === "done") {
+        clearInterval(benchPollTimer);
+        $("benchProgressText").textContent = "Tamamlandı, sonuçlar yükleniyor…";
+        const run = await (await api(`/api/benchmark/runs/${job.run_id}`)).json();
+        renderBenchRun(run);
+        await loadBenchHistory();
+        $("benchRunBtn").disabled = false;
+        $("benchProgressWrap").classList.add("hidden");
+        toast("Benchmark tamamlandı.");
+      } else if (job.status === "error") {
+        clearInterval(benchPollTimer);
+        toast("Benchmark hatası: " + (job.error || "bilinmeyen hata"), true);
+        $("benchRunBtn").disabled = false;
+        $("benchProgressWrap").classList.add("hidden");
+      }
+    } catch (err) {
+      clearInterval(benchPollTimer);
+      toast("İş durumu alınamadı: " + err.message, true);
+      $("benchRunBtn").disabled = false;
+      $("benchProgressWrap").classList.add("hidden");
+    }
+  }, 1500);
+}
+
+$("benchRunBtn").addEventListener("click", async () => {
+  const modes = Array.from(document.querySelectorAll(".benchMode:checked")).map((el) => el.value);
+  if (!modes.length) { toast("En az bir mod seçin.", true); return; }
+  const useJudge = $("benchJudgeToggle").checked;
+  $("benchRunBtn").disabled = true;
+  $("benchProgressWrap").classList.remove("hidden");
+  $("benchProgressText").textContent = "Başlatılıyor…";
+  $("benchProgressFill").style.width = "0%";
+  try {
+    const data = await (await api("/api/benchmark/run", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ modes, use_judge: useJudge }),
+    })).json();
+    pollBenchJob(data.job_id);
+  } catch (err) {
+    toast("Benchmark başlatılamadı: " + err.message, true);
+    $("benchRunBtn").disabled = false;
+    $("benchProgressWrap").classList.add("hidden");
+  }
+});
+
+let benchLoaded = false;
+document.querySelector('.tab[data-tab="benchmark"]').addEventListener("click", () => {
+  if (benchLoaded) return;
+  benchLoaded = true;
+  loadBenchDatasetInfo();
+  loadBenchHistory();
+});
+
 // ============ Başlangıç ============
 (async function init() {
   try {

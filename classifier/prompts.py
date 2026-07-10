@@ -1,7 +1,9 @@
 """LLM prompt şablonları."""
 
+import hashlib
 import json
 
+from . import rules
 from .categories import CATEGORY_DEFINITIONS
 
 SYSTEM_PROMPT = f"""Sen bir bankada görevli, KVKK'ya, 5411 sayılı Bankacılık Kanunu'na ve BDDK
@@ -18,7 +20,12 @@ ADIM 1 — AÇILIM: Kolon adının açılımını çıkarmayı dene; tablo adı,
   her zaman değil. AÇILIMDAN EMİN DEĞİLSEN ZORLAMA: "acilim" alanını null bırak; bu durumda
   veri tipi, uzunluk, PK/null bilgisi ve tablodaki komşu kolonlardan yürüyerek sınıflandır.
   Sana verilen "olası açılım" ve "sözlük eşleşmesi" ipuçları OTOMATİK üretilmiştir; eksik
-  veya yanlış olabilir, körü körüne uyma.
+  veya yanlış olabilir, körü körüne uyma. Kolon adı anlamsız/anonimleştirilmiş görünüyorsa
+  (örn. "col_a1b2c3" gibi bir kod) isimden açılım çıkarmaya ÇALIŞMA; bu durumda tamamen
+  "örnek değerler" (verilmişse), veri tipi ve uzunluğa dayan. Örnek değerler maskeli
+  gösterilir (örn. "12*******34"); maskeli hâliyle bile uzunluk, karakter sınıfı (sayısal/
+  alfanümerik) ve baştaki/sondaki karakterler (IBAN'da "TR" gibi) güçlü bir sınıflandırma
+  sinyalidir — verilmişse mutlaka değerlendir.
 ADIM 2 — OLASI KATEGORİLER: Kolonun girebileceği TÜM kategorileri belirle
   ("olasi_kategoriler" listesi).
 ADIM 3 — ANA KATEGORİ: Olası kategorileri bir kez daha analiz et ve EN UYGUN TEK kategoriyi
@@ -58,7 +65,8 @@ Her kolon için, giriş sırasıyla aynı olacak şekilde bir nesne:
 def build_batch_prompt(schema: str, table: str, columns: list[dict]) -> str:
     """Bir tabloya ait kolon grubu için kullanıcı prompt'u.
 
-    columns: [{kolon, veri_tipi, uzunluk, nullable, pk, note, hints}, ...]
+    columns: [{kolon, veri_tipi, uzunluk, nullable, pk, note, hints, ornek_degerler}, ...]
+    ornek_degerler verilmişse LLM'e gitmeden önce maskelenir (bkz. rules.mask_sample).
     """
     lines = [
         f"ŞEMA: {schema or '-'}",
@@ -80,6 +88,9 @@ def build_batch_prompt(schema: str, table: str, columns: list[dict]) -> str:
             parts.append(f"olası açılım (otomatik, hatalı olabilir): {c['note']}")
         if c.get("hints"):
             parts.append(f"sözlük eşleşmesi (otomatik, hatalı olabilir): {json.dumps(c['hints'], ensure_ascii=False)}")
+        samples = [rules.mask_sample(s) for s in (c.get("ornek_degerler") or []) if str(s).strip()]
+        if samples:
+            parts.append(f"örnek değerler (maskeli): {', '.join(samples[:5])}")
         lines.append(" | ".join(parts))
     lines.append("")
     lines.append(
@@ -103,6 +114,9 @@ KURALLAR:
   seç. Eşitlik hâlinde öncelik: 2 > 3 > 7 > 5 > 4 > 6 > 1.
 - Teknik/işlemsel kolonsa "teknik": true yaz ve en yakın kategoriyi ana kategori yap.
 - Kategori 2 varsa 1'i de ekle; tüzel kişi verisi 1/2 olamaz; müşteri bilgisi 5'tir.
+- Kolon adı anlamsız/anonimleştirilmiş görünüyorsa (örn. "col_a1b2c3") isimden açılım
+  çıkarmaya çalışma; "örnek değerler" verilmişse (maskeli olsa bile uzunluk/karakter
+  sınıfı/baştaki-sondaki karakterler güçlü sinyaldir) ve veri tipine dayan.
 
 Önce kolonun ne tutuyor olabileceğine dair 2-3 cümlelik akıl yürütme yap, sonra SON SATIRDA
 sadece şu JSON'u yaz:
@@ -111,14 +125,25 @@ sadece şu JSON'u yaz:
 
 
 def build_judge_prompt(schema: str, table: str, col: dict, first_pass: dict) -> str:
+    samples = [rules.mask_sample(s) for s in (col.get("ornek_degerler") or []) if str(s).strip()]
+    sample_line = f"Örnek değerler (maskeli): {', '.join(samples[:5])}\n" if samples else ""
     return (
         f"ŞEMA: {schema or '-'}\nTABLO: {table or '-'}\n"
         f"KOLON: {col['kolon']} | tip={col.get('veri_tipi') or '?'}"
         f" | PK={col.get('pk', '?')} | nullable={col.get('nullable', '?')}\n"
         f"Olası açılım (otomatik): {col.get('note') or '-'}\n"
-        f"Sözlük eşleşmesi (otomatik): {json.dumps(col.get('hints') or {}, ensure_ascii=False)}\n\n"
+        f"Sözlük eşleşmesi (otomatik): {json.dumps(col.get('hints') or {}, ensure_ascii=False)}\n"
+        f"{sample_line}\n"
         f"İlk deneme: olası kategoriler={first_pass.get('kategoriler')}, "
         f"ana kategori={first_pass.get('ana_kategori')}, "
         f"guven={first_pass.get('guven')}, gerekce={first_pass.get('gerekce')!r}\n\n"
         "Nihai kararını ver."
     )
+
+
+# SYSTEM_PROMPT veya JUDGE_SYSTEM_PROMPT metni değiştiğinde bu hash otomatik değişir.
+# pipeline._cache_key bunu model adıyla birlikte önbellek anahtarına ekler; aksi hâlde
+# prompt güncellendiğinde eski (artık geçersiz) LLM kararları sessizce önbellekte kalırdı.
+PROMPT_VERSION = hashlib.sha256(
+    (SYSTEM_PROMPT + JUDGE_SYSTEM_PROMPT).encode("utf-8")
+).hexdigest()[:12]

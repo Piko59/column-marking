@@ -18,7 +18,11 @@ if not QWEN_API_KEY:
 USE_CACHE = os.getenv("USE_CACHE", "0") == "1"  # kapalı: her sorgu yeniden değerlendirilir
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "25"))          # tek LLM çağrısındaki maks. kolon sayısı
 JUDGE_THRESHOLD = float(os.getenv("JUDGE_THRESHOLD", "0.60"))  # bu güvenin altı hakem geçişine gider
-LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
+# Tekrarlanabilirlik: varsayılan 0 (deterministik) — denetimde "aynı girdiye aynı çıktı"
+# sorusu gelir; farklılık istenirse .env'den yükseltin. LLM_SEED, sağlayıcı destekliyorsa
+# (OpenAI-uyumlu "seed" alanı) örnekleme akışını da sabitler; desteklemiyorsa yok sayılır.
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0"))
+LLM_SEED = int(os.getenv("LLM_SEED", "7"))
 # Düşünen (reasoning) modellerde harcanacak düşünme bütçesi: low/medium/high veya "" (gönderme).
 # "low" hız için; başarı düşerse "medium"/"high" deneyin. Desteklemeyen modelde yok sayılır.
 REASONING_EFFORT = os.getenv("REASONING_EFFORT", "low")

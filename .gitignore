@@ -9,6 +9,8 @@ venv/
 
 # Uygulama çıktıları
 classification_cache.json
+benchmark_runs/
+.pytest_cache/
 
 # IDE / OS
 .vscode/

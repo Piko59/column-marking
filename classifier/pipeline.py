@@ -9,6 +9,7 @@ Akış (LangGraph benzeri, sade Python):
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import threading
@@ -16,7 +17,20 @@ import threading
 import config
 
 from . import llm, prompts, rules
-from .categories import CATEGORIES
+from .categories import CATEGORIES, CATEGORY_PRIORITY
+
+# classify_rows(mode=...) — bkz. fonksiyon docstring'i.
+VALID_MODES = ("name_only", "content_only", "name_content")
+
+
+def _anonymize(kind: str, value: str) -> str:
+    """content_only modunda isim sinyalini tamamen yok eder: deterministik ama
+    anlamsız bir token üretir (aynı girdi her zaman aynı tokene düşer, ama tokenden
+    orijinal ada geri gidilemez)."""
+    if not value:
+        return value
+    digest = hashlib.sha256(f"{kind}:{value}".encode("utf-8")).hexdigest()[:8]
+    return f"{kind}_{digest}"
 
 # --- Önbellek ----------------------------------------------------------------
 
@@ -26,10 +40,13 @@ _cache_loaded = False
 
 
 def _cache_key(row: dict) -> str:
-    return "|".join(
+    # Model adı + prompt hash'i anahtarın parçası: model veya prompt değişince eski
+    # kararlar otomatik geçersizleşir (aksi hâlde önbellek sessizce bayat kalırdı).
+    base = "|".join(
         str(row.get(k, "")).strip().lower()
         for k in ("sema", "tablo", "kolon", "veri_tipi")
     )
+    return f"{config.QWEN_MODEL}|{prompts.PROMPT_VERSION}|{base}"
 
 
 def _load_cache() -> None:
@@ -67,7 +84,9 @@ def _sanitize(result: dict, column_name: str, source: str) -> dict:
     ana = result.get("ana_kategori")
     ana = int(ana) if str(ana).isdigit() and int(ana) in CATEGORIES else None
     if ana is None and cats:
-        ana = cats[0]
+        # LLM ana kategori vermediyse/geçersizse, prompt'ta tanımlı öncelik sırasına göre düş
+        # (cats[0] her zaman en küçük id'ye düşerdi; bu, "en sıkı kategori kazanır" kuralını çiğniyordu)
+        ana = next((c for c in CATEGORY_PRIORITY if c in cats), cats[0])
     if ana is not None and ana not in cats:
         cats = sorted(cats + [ana])
     try:
@@ -134,10 +153,11 @@ async def _classify_group(schema: str, table: str, cols: list[dict]) -> list[dic
 async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
     """Aşama 2: düşük güvenli kolon için hakem geçişi."""
     try:
+        # temperature verilmez: config.LLM_TEMPERATURE'a düşer (varsayılan 0 —
+        # tekrarlanabilirlik için birincil sınıflandırma ile aynı deterministik ayar)
         raw = await llm.chat(
             prompts.JUDGE_SYSTEM_PROMPT,
             prompts.build_judge_prompt(schema, table, col, first_pass),
-            temperature=0.2,
         )
         parsed = llm.extract_json(raw)
         if isinstance(parsed, list):
@@ -153,26 +173,51 @@ async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
 
 # --- Ana giriş noktası -------------------------------------------------------
 
-async def classify_rows(rows: list[dict], use_judge: bool = True) -> list[dict]:
+async def classify_rows(
+    rows: list[dict], use_judge: bool = True, mode: str = "name_content"
+) -> list[dict]:
     """Satır listesini sınıflandırır; giriş sırasıyla aynı sırada sonuç döndürür.
 
-    rows: [{sema, tablo, kolon, veri_tipi, uzunluk, nullable, pk}, ...]
+    rows: [{sema, tablo, kolon, veri_tipi, uzunluk, nullable, pk, ornek_degerler?}, ...]
+    mode: "name_content" (varsayılan/üretim) — isim + varsa (maskeli) örnek değerler.
+          "name_only"    — yalnız isim/tip/PK; örnek değerler verilse bile gönderilmez.
+          "content_only" — kolon/tablo/şema adı anonimleştirilir (isim sinyali sıfırlanır);
+                            yalnız örnek değerler + tip/uzunluk/PK üzerinden sınıflandırma
+                            zorlanır. Bu üç mod, "isimden mi anlıyoruz, içerikten mi, yoksa
+                            ikisi birden mi" sorusunu ölçmek için var (bkz. benchmark).
     """
-    if config.USE_CACHE:
+    if mode not in VALID_MODES:
+        raise ValueError(f"Geçersiz mode: {mode!r}; beklenen: {VALID_MODES}")
+    # Önbellek yalnız üretim modunda (name_content) kullanılır: benchmark modları
+    # kasıtlı olarak isim/içerik sinyalini kısıtlar, bu yüzden her zaman taze koşar.
+    if config.USE_CACHE and mode == "name_content":
         _load_cache()
     results: list[dict | None] = [None] * len(rows)
 
-    # 1-2: kural analizi + önbellek (önbellek varsayılan olarak KAPALI; config.USE_CACHE)
+    # 1-2: kural analizi + önbellek
     pending: dict[tuple[str, str], list[tuple[int, dict]]] = {}
     for idx, row in enumerate(rows):
-        if config.USE_CACHE:
+        if config.USE_CACHE and mode == "name_content":
             cached = _cache.get(_cache_key(row))
             if cached:
                 results[idx] = {**cached, "kaynak": "cache"}
                 continue
-        analysis = rules.analyze_column(row.get("kolon", ""), row.get("tablo", ""))
-        col = {**row, "note": analysis["note"], "hints": analysis["hints"]}
-        group_key = (str(row.get("sema", "")), str(row.get("tablo", "")))
+        kolon_name = row.get("kolon", "")
+        tablo_name = row.get("tablo", "")
+        sema_name = row.get("sema", "")
+        samples = row.get("ornek_degerler") or []
+        if mode == "content_only":
+            kolon_name = _anonymize("col", kolon_name)
+            tablo_name = _anonymize("tbl", tablo_name)
+            sema_name = _anonymize("sch", sema_name)
+        elif mode == "name_only":
+            samples = []
+        analysis = rules.analyze_column(kolon_name, tablo_name)
+        col = {
+            **row, "kolon": kolon_name, "tablo": tablo_name, "sema": sema_name,
+            "ornek_degerler": samples, "note": analysis["note"], "hints": analysis["hints"],
+        }
+        group_key = (str(sema_name), str(tablo_name))
         pending.setdefault(group_key, []).append((idx, col))
 
     # 3: tablo bazlı toplu sınıflandırma (gruplar paralel, grup içi tek çağrı)
@@ -196,7 +241,7 @@ async def classify_rows(rows: list[dict], use_judge: bool = True) -> list[dict]:
                         group_results[j] = new_res
             for (idx, col), res in zip(chunk, group_results):
                 results[idx] = res
-                if config.USE_CACHE and res["kaynak"] != "hata":
+                if config.USE_CACHE and mode == "name_content" and res["kaynak"] != "hata":
                     with _cache_lock:
                         _cache[_cache_key(rows[idx])] = {
                             k: v for k, v in res.items() if k != "kaynak"
@@ -209,7 +254,7 @@ async def classify_rows(rows: list[dict], use_judge: bool = True) -> list[dict]:
             await process_group(gk, items)
 
     await asyncio.gather(*(bounded(gk, items) for gk, items in pending.items()))
-    if config.USE_CACHE and pending:
+    if config.USE_CACHE and mode == "name_content" and pending:
         _save_cache()
 
     return [r or _error_result(rows[i].get("kolon", "?"), "işlenemedi") for i, r in enumerate(results)]

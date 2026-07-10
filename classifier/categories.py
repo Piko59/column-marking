@@ -18,6 +18,11 @@ CATEGORIES = {
     7: "Şifreli Veri",
 }
 
+# Eşit uyum durumunda en sıkı korunması gereken kategori kazanır (bkz. prompts.py
+# ADIM 3 ve JUDGE_SYSTEM_PROMPT ile aynı sıra). pipeline._sanitize buradan okur;
+# tek doğruluk kaynağı burasıdır.
+CATEGORY_PRIORITY: list[int] = [2, 3, 7, 5, 4, 6, 1]
+
 CATEGORY_DEFINITIONS = """\
 1. Kişisel Veri (KVKK m.3/d)
    Kimliği belirli veya belirlenebilir GERÇEK KİŞİYE ilişkin her türlü bilgi.

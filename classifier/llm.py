@@ -30,7 +30,11 @@ def _get_client() -> httpx.AsyncClient:
 
 
 async def chat(system: str, user: str, temperature: float | None = None) -> str:
-    """Tek chat çağrısı; geçici hatalarda üstel bekleme ile yeniden dener."""
+    """Tek chat çağrısı; geçici hatalarda üstel bekleme ile yeniden dener.
+
+    Tekrarlanabilirlik için varsayılan temperature=0 ve (sağlayıcı destekliyorsa) sabit
+    "seed" gönderilir — aynı girdiye aynı çıktı denetim/benchmark için önemlidir.
+    """
     payload = {
         "model": config.QWEN_MODEL,
         "temperature": config.LLM_TEMPERATURE if temperature is None else temperature,
@@ -41,13 +45,18 @@ async def chat(system: str, user: str, temperature: float | None = None) -> str:
     }
     if config.REASONING_EFFORT in ("low", "medium", "high"):
         payload["reasoning"] = {"effort": config.REASONING_EFFORT}
+    if config.LLM_SEED is not None:
+        payload["seed"] = config.LLM_SEED
+    # Sağlayıcı bu opsiyonel alanlardan birini desteklemiyorsa 400 döner; sırayla
+    # çıkarıp aynı denemede tekrar dener (deneme bütçesini tüketmeden).
+    optional_keys = [k for k in ("reasoning", "seed") if k in payload]
+
     last_err: Exception | None = None
     for attempt in range(config.LLM_MAX_RETRIES):
         try:
             resp = await _get_client().post("/chat/completions", json=payload)
-            if resp.status_code == 400 and "reasoning" in payload:
-                # Sağlayıcı reasoning parametresini desteklemiyor; parametresiz dene
-                payload.pop("reasoning")
+            while resp.status_code == 400 and optional_keys:
+                payload.pop(optional_keys.pop(0), None)
                 resp = await _get_client().post("/chat/completions", json=payload)
             if resp.status_code in (429, 500, 502, 503, 504):
                 raise httpx.HTTPStatusError("retryable", request=resp.request, response=resp)
@@ -62,41 +71,58 @@ async def chat(system: str, user: str, temperature: float | None = None) -> str:
 
 
 def extract_json(text: str):
-    """LLM çıktısındaki ilk JSON dizisini/nesnesini güvenli biçimde ayıklar."""
+    """LLM çıktısındaki ilk geçerli JSON dizisini/nesnesini güvenli biçimde ayıklar.
+
+    Metinde hangi açılış parantezi ('[' veya '{') önce geçiyorsa oradan başlar ve iç
+    içe [] / {} yuvalamayı ORTAK bir yığınla (stack) izler. Not: eski sürüm önce tüm
+    metinde '[' arayıp sonra '{' arıyordu; bu, "gerekçe metni + son satırda
+    {"olasi_kategoriler": [...], ...}" biçimindeki hakem çıktılarında dış nesneden
+    önce iç içteki [...] dizisini yanlışlıkla eşleştirip döndürüyordu.
+    """
     text = re.sub(r"```(?:json)?", "", text).strip()
-    # Önce doğrudan dene
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    # Dengeli ilk [ ... ] veya { ... } bloğunu bul (son satırdan geriye doğru nesne ara)
-    for open_ch, close_ch in (("[", "]"), ("{", "}")):
-        start = text.find(open_ch)
-        while start != -1:
-            depth = 0
-            in_str = False
-            escape = False
-            for i in range(start, len(text)):
-                ch = text[i]
-                if escape:
-                    escape = False
-                    continue
-                if ch == "\\":
-                    escape = in_str
-                    continue
-                if ch == '"':
-                    in_str = not in_str
-                    continue
-                if in_str:
-                    continue
-                if ch == open_ch:
-                    depth += 1
-                elif ch == close_ch:
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            return json.loads(text[start : i + 1])
-                        except json.JSONDecodeError:
-                            break
-            start = text.find(open_ch, start + 1)
+
+    pairs = {"[": "]", "{": "}"}
+    closers = {"]", "}"}
+    pos = 0
+    while True:
+        candidates = [i for ch in pairs if (i := text.find(ch, pos)) != -1]
+        if not candidates:
+            break
+        start = min(candidates)
+        stack: list[str] = []
+        in_str = False
+        escape = False
+        end = None
+        for i in range(start, len(text)):
+            ch = text[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = in_str
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch in pairs:
+                stack.append(pairs[ch])
+            elif ch in closers:
+                if not stack or stack[-1] != ch:
+                    break  # dengesiz kapanış; bu aday geçersiz
+                stack.pop()
+                if not stack:
+                    end = i
+                    break
+        if end is not None:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                pass
+        pos = start + 1
     raise ValueError(f"LLM çıktısında geçerli JSON bulunamadı: {text[:300]}")

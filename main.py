@@ -13,6 +13,9 @@ from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, Field
 
+from benchmark import dataset as bench_dataset
+from benchmark import jobs as bench_jobs
+from benchmark import store as bench_store
 from classifier.categories import CATEGORIES
 from classifier.pipeline import classify_rows
 from classifier.rules import analyze_column
@@ -88,11 +91,14 @@ class RowIn(BaseModel):
     kurus: str = ""
     nullable: str = ""
     pk: str = ""
+    # İsteğe bağlı örnek değerler (maskeli olarak prompta gider, bkz. classifier/rules.mask_sample).
+    ornek_degerler: list[str] = Field(default_factory=list)
 
 
 class ClassifyRequest(BaseModel):
     rows: list[RowIn] = Field(..., max_length=MAX_ROWS_PER_REQUEST)
     use_judge: bool = True
+    mode: str = "name_content"  # "name_only" | "content_only" | "name_content"
 
 
 class ExportRow(BaseModel):
@@ -148,7 +154,11 @@ async def classify(req: ClassifyRequest):
     """Satır grubunu sınıflandırır. Frontend büyük dosyaları parça parça gönderir."""
     if not req.rows:
         raise HTTPException(400, "Satır listesi boş.")
-    results = await classify_rows([r.model_dump() for r in req.rows], use_judge=req.use_judge)
+    if req.mode not in ("name_only", "content_only", "name_content"):
+        raise HTTPException(400, "Geçersiz mode.")
+    results = await classify_rows(
+        [r.model_dump() for r in req.rows], use_judge=req.use_judge, mode=req.mode
+    )
     return {"results": results}
 
 
@@ -199,6 +209,79 @@ def export_excel(req: ExportRequest):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="kolon_siniflandirma.xlsx"'},
     )
+
+
+# --- Benchmark uçları -----------------------------------------------------------
+
+class BenchmarkRunRequest(BaseModel):
+    modes: list[str] = Field(default_factory=lambda: ["name_only", "content_only", "name_content"])
+    use_judge: bool = True
+
+
+@app.get("/api/benchmark/dataset")
+def benchmark_dataset_summary():
+    """Golden veri setinin özeti (kavram/satır sayısı, kovalar) — koşmadan önce UI'da gösterilir."""
+    return bench_dataset.dataset_summary()
+
+
+@app.get("/api/benchmark/dataset/concepts")
+def benchmark_dataset_concepts():
+    """Veri setindeki her kavramın ground truth'u ve örnek değerleri — şeffaflık için."""
+    return {
+        "concepts": [
+            {
+                "key": c.key, "bucket": c.bucket, "ana_kategori": c.ana_kategori,
+                "kategoriler": c.kategoriler, "teknik": c.teknik, "gerekce": c.gerekce,
+                "named": {"sema": c.named_schema, "tablo": c.named_table, "kolon": c.named_column},
+                "random": {"sema": c.random_schema, "tablo": c.random_table, "kolon": c.random_column},
+                "veri_tipi": c.veri_tipi, "uzunluk": c.uzunluk, "ornek_degerler": c.sample_values,
+            }
+            for c in bench_dataset.CONCEPTS
+        ]
+    }
+
+
+@app.post("/api/benchmark/run")
+async def benchmark_run(req: BenchmarkRunRequest):
+    """Benchmark koşusunu arka planda başlatır; ilerleme /api/benchmark/jobs/{id} ile izlenir.
+
+    async def OLMALI: start_job() içi asyncio.create_task() çağırıyor, bu da çalışan bir
+    event loop gerektirir. Sync (def) uç noktalar FastAPI'de thread pool'da çalışır ve o
+    thread'de event loop yoktur — sync bırakılırsa "no running event loop" ile patlar.
+    """
+    valid = {"name_only", "content_only", "name_content"}
+    if not req.modes or not set(req.modes).issubset(valid):
+        raise HTTPException(400, f"Geçersiz mode listesi; beklenen alt küme: {sorted(valid)}")
+    job_id = bench_jobs.start_job(req.modes, req.use_judge)
+    return {"job_id": job_id}
+
+
+@app.get("/api/benchmark/jobs/{job_id}")
+def benchmark_job_status(job_id: str):
+    job = bench_jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "İş bulunamadı.")
+    return job
+
+
+@app.get("/api/benchmark/runs")
+def benchmark_list_runs(limit: int = 50):
+    return {"runs": bench_store.list_runs(limit=limit)}
+
+
+@app.get("/api/benchmark/runs/{run_id}")
+def benchmark_get_run(run_id: str):
+    run = bench_store.get_run(run_id)
+    if run is None:
+        raise HTTPException(404, "Koşu bulunamadı.")
+    return run
+
+
+@app.delete("/api/benchmark/runs/{run_id}")
+def benchmark_delete_run(run_id: str):
+    if not bench_store.delete_run(run_id):
+        raise HTTPException(404, "Koşu bulunamadı.")
+    return {"ok": True}
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

@@ -121,6 +121,25 @@ def keyword_hints(tokens: list[str]) -> dict[str, list[int]]:
     return hits
 
 
+def mask_sample(value) -> str:
+    """Örnek veri değerini LLM'e göndermeden önce maskeler.
+
+    Uzunluk ve baştaki/sondaki birkaç karakter korunur (TCKN'nin 11 hane, IBAN'ın
+    "TR" ile başlayıp 26 karakter olması gibi biçim sinyalleri sınıflandırma için
+    değerlidir) ama ortadaki asıl değer gizlenir — sınıflandırmaya çalıştığımız şey
+    zaten gizli/hassas veri olabilir, ham hâliyle üçüncü taraf bir LLM'e gitmemeli.
+    """
+    v = str(value).strip()
+    n = len(v)
+    if n == 0:
+        return ""
+    if n <= 2:
+        return "*" * n
+    if n <= 6:
+        return v[0] + "*" * (n - 2) + v[-1]
+    return v[:2] + "*" * (n - 4) + v[-2:]
+
+
 def analyze_column(column_name: str, table_name: str) -> dict:
     """Tek kolon için tüm kural çıktıları: açılım notu + ipuçları."""
     exp = expand_column(column_name, table_name)

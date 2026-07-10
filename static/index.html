@@ -19,6 +19,7 @@
       <nav class="tabs" role="tablist">
         <button class="tab active" data-tab="excel" role="tab">Excel Yükle</button>
         <button class="tab" data-tab="single" role="tab">Tekil Sorgu</button>
+        <button class="tab" data-tab="benchmark" role="tab">Benchmark</button>
       </nav>
     </div>
   </header>
@@ -135,6 +136,105 @@
         <div id="singleResult" class="card result-card hidden">
           <h2>Sonuç</h2>
           <div id="singleResultBody"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== BENCHMARK SEKMESİ ==================== -->
+    <section id="tab-benchmark" class="tab-panel">
+      <div class="card bench-intro">
+        <h2>Golden Benchmark</h2>
+        <p class="dim">
+          Elle etiketlenmiş, ground truth'u kesin 112 satırlık sentetik bir veri seti
+          üzerinde üç sinyal koşulunu ölçer: <b>yalnız isim</b> (içerik yok),
+          <b>yalnız içerik</b> (isim anonimleştirilir) ve <b>isim + içerik</b> birlikte.
+          Her koşul, aynı 56 kavramın hem <i>gerçekçi isimli</i> hem <i>anlamsız/rastgele
+          isimli</i> sürümünde çalıştırılır — böylece modelin isimden mi, içerikten mi,
+          yoksa ikisinden mi doğru sonuca vardığı ayrıştırılabilir.
+        </p>
+        <div id="benchDatasetInfo" class="stats-bar"></div>
+      </div>
+
+      <div class="card bench-controls">
+        <div class="bench-controls-row">
+          <div class="bench-modes">
+            <label class="checkbox"><input type="checkbox" class="benchMode" value="name_only" checked> Yalnız isim</label>
+            <label class="checkbox"><input type="checkbox" class="benchMode" value="content_only" checked> Yalnız içerik</label>
+            <label class="checkbox"><input type="checkbox" class="benchMode" value="name_content" checked> İsim + içerik</label>
+          </div>
+          <label class="checkbox">
+            <input type="checkbox" id="benchJudgeToggle" checked>
+            <span>Düşük güvenlilere hakem geçişi uygula</span>
+          </label>
+          <button id="benchRunBtn" class="btn btn-primary">Benchmark Çalıştır</button>
+        </div>
+        <div id="benchProgressWrap" class="progress-wrap hidden">
+          <div class="progress-bar"><div id="benchProgressFill" class="progress-fill"></div></div>
+          <span id="benchProgressText" class="progress-text"></span>
+        </div>
+      </div>
+
+      <div id="benchResults" class="hidden">
+        <div id="benchCards" class="bench-cards"></div>
+
+        <div class="card">
+          <h2>Kova × Mod Doğruluk Isı Haritası <span class="dim" style="font-weight:400;font-size:12px">(ana kategori tam eşleşme oranı)</span></h2>
+          <div class="table-scroll"><table class="grid heatmap-table" id="benchHeatmap"></table></div>
+        </div>
+
+        <div class="card">
+          <h2>İsimli mi, Rastgele mi? <span class="dim" style="font-weight:400;font-size:12px">(mod başına doğruluk, gruba göre)</span></h2>
+          <div id="benchChart"></div>
+        </div>
+
+        <div class="card">
+          <h2>İsim Bağımlılığı <span class="dim" style="font-weight:400;font-size:12px">(yalnız isim verildiğinde doğru, isim anlamsızken yanlış olan kavram oranı)</span></h2>
+          <div id="benchDependency" class="stats-bar"></div>
+        </div>
+
+        <div class="card">
+          <h2>Satır Bazında Detay</h2>
+          <div class="filters">
+            <select id="benchFilterMode" class="select"><option value="">Tüm modlar</option></select>
+            <select id="benchFilterGroup" class="select">
+              <option value="">Tüm gruplar</option>
+              <option value="named">İsimli</option>
+              <option value="random">Rastgele</option>
+            </select>
+            <select id="benchFilterBucket" class="select"><option value="">Tüm kategoriler</option></select>
+            <select id="benchFilterStatus" class="select">
+              <option value="">Tüm durumlar</option>
+              <option value="correct">Doğru (ana kategori)</option>
+              <option value="wrong">Yanlış (ana kategori)</option>
+            </select>
+          </div>
+          <div class="table-scroll">
+            <table class="grid">
+              <thead>
+                <tr>
+                  <th>Mod</th><th>Grup</th><th>Kavram</th><th>Kova</th>
+                  <th>Gerçek Ana Kat.</th><th>Tahmin Ana Kat.</th><th>Doğru mu</th>
+                  <th>Güven</th><th>Kaynak</th>
+                </tr>
+              </thead>
+              <tbody id="benchDetailBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Deneme Geçmişi</h2>
+        <div class="table-scroll">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th>Tarih</th><th>Modlar</th><th>Hakem</th><th>Model</th><th>Süre</th>
+                <th>İsim+İçerik Doğruluk</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="benchHistoryBody"></tbody>
+          </table>
         </div>
       </div>
     </section>
