@@ -88,11 +88,10 @@ Sistemleri ve Elektronik Bankacılık Hizmetleri Hakkında Yönetmelik ("hassas 
 
 ## Örnek Değerler (İçerik Sinyali)
 
-Örnek değerler üç yoldan girer ve LLM'e gönderilmeden önce **maskelenir**
-(`rules.mask_sample`, iki strateji): rakam ağırlıklı değerlerde uzunluk + ilk/son
-karakterler korunur, ortası yıldızlanır (TCKN'nin 11 hane, IBAN'ın "TR" öneki kalır);
-metinsel değerlerde (ad, din, kan grubu...) içerik hiç gösterilmez, yalnız desen gider
-(büyük harf→X, küçük harf→x, rakam→9: "0 Rh+" → "9 Xx+").
+Örnek değerler LLM'e **ham olarak** gönderilir. Bu proje yerel/banka içi bir LLM ile
+çalışmak üzere kuruludur; veri banka ağı dışına çıkmadığı için maskeleme yapılmaz —
+ham değerler (uzunluk, format, değer aralığı) içerik sinyalinin en güçlü kaynağıdır ve
+sınıflandırma doğruluğunu belirgin şekilde artırır (özellikle `content_only` modu).
 
 Giriş yolları:
 1. **Envanter Excel'inde "Örnek Değerler" sütunu** — hücrede `;` `|` veya ", " ile
@@ -144,7 +143,7 @@ main.py                  FastAPI: upload / classify / analyze / export / benchma
 config.py                model, anahtar ve pipeline ayarları
 classifier/
   categories.py          7 kategori + tanımları + öncelik sırası (tek doğruluk kaynağı)
-  rules.py               önek çözümü, tokenizasyon, anahtar kelime sözlüğü, örnek maskeleme
+  rules.py               önek çözümü, tokenizasyon, anahtar kelime sözlüğü
   prompts.py             toplu sınıflandırma + hakem prompt'ları + prompt versiyon hash'i
   llm.py                 OpenAI-uyumlu istemci (retry + güvenli JSON ayıklama)
   pipeline.py            orkestrasyon: kural → önbellek → toplu LLM → hakem (3 mod destekli)

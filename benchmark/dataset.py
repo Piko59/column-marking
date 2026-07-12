@@ -40,7 +40,7 @@ class Concept:
     named_column: str
     veri_tipi: str
     uzunluk: str
-    sample_values: list[str]  # ham (maskesiz) örnek değerler; pipeline gönderirken maskeler
+    sample_values: list[str]  # ham örnek değerler; LLM'e ham olarak gider (yerel/banka içi)
     gerekce: str
     random_schema: str = ""
     random_table: str = ""

@@ -237,7 +237,13 @@ def _pack_into_superbatches(
 
 
 async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
-    """Aşama 2: düşük güvenli kolon için hakem geçişi."""
+    """Aşama 2: düşük güvenli/belirsiz kolon için hakem geçişi.
+
+    Hakem cevabının güveni ilk denemenin altındaysa İLK sonucu koruruz — aksi hâlde
+    hakem "belki yanlış olanı belki daha yanlış olanla değiştir" haline gelir.
+    Kabul edilen hakem sonucu "llm+hakem", reddedilen "llm+hakem_ret" olarak işaretlenir
+    (izlenebilirlik için ayırt edilir).
+    """
     try:
         # temperature verilmez: config.LLM_TEMPERATURE'a düşer (varsayılan 0 —
         # tekrarlanabilirlik için birincil sınıflandırma ile aynı deterministik ayar)
@@ -248,11 +254,21 @@ async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
         parsed = llm.extract_json(raw)
         if isinstance(parsed, list):
             parsed = parsed[-1] if parsed else {}
-        result = _sanitize(parsed, col["kolon"], "llm+hakem")
-        result["ilk_deneme"] = {
+        candidate = _sanitize(parsed, col["kolon"], "llm+hakem")
+        # Hakem kendisi ilk denemeden daha az emin — ilk sonucu koru.
+        if candidate["guven"] < first_pass["guven"]:
+            kept = dict(first_pass)
+            kept["kaynak"] = "llm+hakem_ret"
+            kept["hakem_denemesi"] = {
+                "kategoriler": candidate["kategoriler"],
+                "ana_kategori": candidate["ana_kategori"],
+                "guven": candidate["guven"],
+            }
+            return kept
+        candidate["ilk_deneme"] = {
             "kategoriler": first_pass["kategoriler"], "guven": first_pass["guven"],
         }
-        return result
+        return candidate
     except Exception:
         return first_pass  # hakem başarısızsa ilk sonucu koru
 
@@ -265,7 +281,7 @@ async def classify_rows(
     """Satır listesini sınıflandırır; giriş sırasıyla aynı sırada sonuç döndürür.
 
     rows: [{sema, tablo, kolon, veri_tipi, uzunluk, nullable, pk, ornek_degerler?}, ...]
-    mode: "name_content" (varsayılan/üretim) — isim + varsa (maskeli) örnek değerler.
+    mode: "name_content" (varsayılan/üretim) — isim + varsa ham örnek değerler.
           "name_only"    — yalnız isim/tip/PK; örnek değerler verilse bile gönderilmez.
           "content_only" — kolon/tablo/şema adı anonimleştirilir (isim sinyali sıfırlanır);
                             yalnız örnek değerler + tip/uzunluk/PK üzerinden sınıflandırma
@@ -337,15 +353,20 @@ async def classify_rows(
             group_results = await _classify_multi_group(table_groups, examples=examples)
             chunk = [pair for _, items in sb for pair in items]
 
-        # 4: hakem geçişi — yalnızca gerçekten kararsız kolonlar; modelin bilinçli olarak
-        # "teknik" işaretledikleri hakeme gitmez (hız için kritik)
+        # 4: hakem geçişi — iki tetikleyici: (a) güven eşiğin altında, (b) model üç ya da
+        # daha fazla olası kategori döndürdü (gerçek belirsizlik sinyali). Model bilinçli
+        # olarak "teknik" işaretlediği kolonlar hakeme gitmez (hız için kritik).
         if use_judge:
             judge_tasks = []
             for j, res in enumerate(group_results):
-                if (res["kaynak"] == "llm" and res["guven"] < config.JUDGE_THRESHOLD
-                        and not res["teknik"]):
-                    _, col = chunk[j]
-                    judge_tasks.append((j, _judge(str(col.get("sema", "")), str(col.get("tablo", "")), col, res)))
+                if res["kaynak"] != "llm" or res["teknik"]:
+                    continue
+                low_conf = res["guven"] < config.JUDGE_THRESHOLD
+                ambiguous = len(res["kategoriler"]) >= 3
+                if not (low_conf or ambiguous):
+                    continue
+                _, col = chunk[j]
+                judge_tasks.append((j, _judge(str(col.get("sema", "")), str(col.get("tablo", "")), col, res)))
             if judge_tasks:
                 judged = await asyncio.gather(*(t for _, t in judge_tasks))
                 for (j, _), new_res in zip(judge_tasks, judged):

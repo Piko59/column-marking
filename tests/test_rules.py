@@ -2,7 +2,6 @@ from classifier.rules import (
     analyze_column,
     expand_column,
     keyword_hints,
-    mask_sample,
     split_tokens,
     table_prefix_candidates,
 )
@@ -84,50 +83,6 @@ class TestKeywordHints:
 
     def test_multi_category_hint(self):
         assert keyword_hints(["sifre"]) == {"sifre": [6, 7]}
-
-
-class TestMaskSample:
-    def test_empty_value(self):
-        assert mask_sample("") == ""
-
-    def test_medium_numeric_keeps_first_and_last_char(self):
-        assert mask_sample("123456") == "1****6"
-
-    def test_long_numeric_keeps_two_chars_each_side(self):
-        v = "TR330006100519786457841326"  # örnek IBAN biçimi (rakam ağırlıklı)
-        result = mask_sample(v)
-        assert result.startswith("TR")
-        assert result.endswith("26")
-        assert len(result) == len(v)
-
-    def test_length_always_preserved(self):
-        v = "12345678901"  # TCKN uzunluğu
-        assert len(mask_sample(v)) == len(v)
-
-    def test_strips_whitespace_before_masking(self):
-        assert mask_sample("  12  ") == "**"
-
-    # --- metinsel değerler: içerik hiç sızmaz, yalnız desen ---
-    def test_textual_value_fully_patterned(self):
-        # Kısa/az seçenekli metinlerde baş-son karakter bile sızdırılmaz
-        # (eski davranış "İ***m" idi; "İslam" tahmin edilebiliyordu)
-        assert mask_sample("İslam") == "Xxxxx"
-
-    def test_textual_pattern_preserves_structure(self):
-        assert mask_sample("0 Rh+") == "9 Xx+"
-
-    def test_short_textual_patterned(self):
-        assert mask_sample("ab") == "xx"
-
-    def test_email_pattern_keeps_at_and_dots(self):
-        result = mask_sample("ahmety85@gmail.com")
-        assert "@" in result and "." in result
-        assert "gmail" not in result and "ahmety" not in result
-
-    def test_name_not_leaked(self):
-        result = mask_sample("Ahmet Yılmaz")
-        assert "Ah" not in result and "az" not in result
-        assert result == "Xxxxx Xxxxxx"
 
 
 class TestAnalyzeColumn:

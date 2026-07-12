@@ -7,6 +7,7 @@ from classifier.pipeline import (
     _cache_key,
     _classify_multi_group,
     _error_result,
+    _judge,
     _pack_into_superbatches,
     _sanitize,
     classify_rows,
@@ -142,6 +143,127 @@ class TestClassifyRowsModeValidation:
         # Ağ çağrısı yapılmadan, en baştaki doğrulamada patlamalı
         with pytest.raises(ValueError):
             await classify_rows([{"kolon": "x"}], mode="bogus-mode")
+
+
+class TestJudgeAcceptance:
+    """Hakem geçişinin sonuç kabul davranışı: yalnız güven arttıysa kabul."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_hakem_when_confidence_drops(self, monkeypatch):
+        # İlk denemede güven 0.72, hakem 0.55 dönüyor — ilk sonuç korunur, kaynak "llm+hakem_ret".
+        async def fake_chat(system, user, temperature=None):
+            import json
+            return json.dumps({
+                "acilim": None, "olasi_kategoriler": [4], "ana_kategori": 4,
+                "teknik": False, "guven": 0.55, "gerekce": "hakem",
+            })
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+        first_pass = _sanitize(
+            {"olasi_kategoriler": [1, 5], "ana_kategori": 5, "guven": 0.72, "gerekce": "ilk"},
+            "col", "llm",
+        )
+        result = await _judge("s", "t", {"kolon": "col"}, first_pass)
+        assert result["kaynak"] == "llm+hakem_ret"
+        assert result["ana_kategori"] == 5  # ilk sonuç korundu, hakemin 4'ü değil
+        assert result["guven"] == 0.72
+        assert result["hakem_denemesi"]["ana_kategori"] == 4
+
+    @pytest.mark.asyncio
+    async def test_accepts_hakem_when_confidence_rises(self, monkeypatch):
+        # İlk 0.55, hakem 0.85 — hakem sonucu kabul edilir, kaynak "llm+hakem".
+        async def fake_chat(system, user, temperature=None):
+            import json
+            return json.dumps({
+                "acilim": None, "olasi_kategoriler": [3], "ana_kategori": 3,
+                "teknik": False, "guven": 0.85, "gerekce": "hakem",
+            })
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+        first_pass = _sanitize(
+            {"olasi_kategoriler": [4], "ana_kategori": 4, "guven": 0.55, "gerekce": "ilk"},
+            "col", "llm",
+        )
+        result = await _judge("s", "t", {"kolon": "col"}, first_pass)
+        assert result["kaynak"] == "llm+hakem"
+        assert result["ana_kategori"] == 3
+        assert result["guven"] == 0.85
+        assert result["ilk_deneme"]["kategoriler"] == [4]
+        assert result["ilk_deneme"]["guven"] == 0.55
+
+
+class TestJudgeTrigger:
+    """Hakem tetikleyicisi: düşük güven VEYA ≥3 olası kategori (belirsizlik)."""
+
+    @pytest.mark.asyncio
+    async def test_high_conf_but_ambiguous_categories_triggers_hakem(self, monkeypatch):
+        # Model 3 kategoriye emin gibi görünüyor (guven=0.90) — tetiklenmeli.
+        chat_calls: list[str] = []
+
+        async def fake_chat(system, user, temperature=None):
+            chat_calls.append(system)
+            import json
+            # İlk çağrı aslam sınıflandırma, ikinci çağrı hakem
+            if len(chat_calls) == 1:
+                return json.dumps([{
+                    "kolon": "iban", "acilim": "IBAN",
+                    "olasi_kategoriler": [1, 3, 5], "ana_kategori": 5,
+                    "teknik": False, "guven": 0.90, "gerekce": "belirsiz",
+                }])
+            return json.dumps({
+                "acilim": "IBAN", "olasi_kategoriler": [5], "ana_kategori": 5,
+                "teknik": False, "guven": 0.95, "gerekce": "müşteri sırrı",
+            })
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+        results = await classify_rows(
+            [{"kolon": "iban", "tablo": "MusteriHesap", "sema": "core", "veri_tipi": "varchar"}],
+            use_judge=True, mode="name_only",
+        )
+        assert len(chat_calls) == 2, "Hakem tetiklenmedi (≥3 olası kategori var, tetiklenmeliydi)"
+        assert results[0]["kaynak"] == "llm+hakem"
+
+    @pytest.mark.asyncio
+    async def test_high_conf_two_categories_does_not_trigger(self, monkeypatch):
+        # 2 olası kategori + yüksek güven — hakem tetiklenmemeli.
+        chat_calls: list[str] = []
+
+        async def fake_chat(system, user, temperature=None):
+            chat_calls.append(system)
+            import json
+            return json.dumps([{
+                "kolon": "ad", "acilim": "Ad",
+                "olasi_kategoriler": [1, 5], "ana_kategori": 5,
+                "teknik": False, "guven": 0.95, "gerekce": "müşteri kimlik",
+            }])
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+        await classify_rows(
+            [{"kolon": "ad", "tablo": "Musteri", "sema": "core", "veri_tipi": "varchar"}],
+            use_judge=True, mode="name_only",
+        )
+        assert len(chat_calls) == 1, "Yüksek güven+2 kategori var, hakem tetiklenmemeliydi"
+
+    @pytest.mark.asyncio
+    async def test_technical_column_never_triggers_hakem(self, monkeypatch):
+        # "teknik=true" olan kolon düşük güvende bile hakeme gitmez (hız için kritik).
+        chat_calls: list[str] = []
+
+        async def fake_chat(system, user, temperature=None):
+            chat_calls.append(system)
+            import json
+            return json.dumps([{
+                "kolon": "rowVer", "acilim": None,
+                "olasi_kategoriler": [6], "ana_kategori": 6,
+                "teknik": True, "guven": 0.40, "gerekce": "versiyon",
+            }])
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+        await classify_rows(
+            [{"kolon": "rowVer", "tablo": "T", "sema": "s", "veri_tipi": "int"}],
+            use_judge=True, mode="name_only",
+        )
+        assert len(chat_calls) == 1, "Teknik kolon düşük güvende bile hakeme gitmemeli"
 
 
 def _col(kolon):

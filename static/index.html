@@ -39,7 +39,7 @@
             <span><b>Ham veri tablosu</b> — ilk satır kolon adları, altı gerçek veri; her sayfa ayrı tablo sayılır, örnek değerler otomatik toplanır</span></label>
         </div>
         <p class="dropzone-hint">Envanter sütunları: Sunucu, Veri Tabanı, Şema, Tablo Ad, Kolon Ad, Veri Tipi, Null Flag, PK Flag, Örnek Değerler.
-          Örnek değerler LLM'e yalnızca <b>maskelenmiş</b> olarak gönderilir.</p>
+          Örnek değerler LLM'e <b>ham olarak</b> gönderilir (yerel/banka içi LLM).</p>
         <input type="file" id="fileInput" accept=".xlsx,.xlsm" hidden>
       </div>
 
@@ -137,7 +137,7 @@
                 <option value="0">0 — PK değil</option>
               </select>
             </label>
-            <label style="grid-column: 1 / -1">Örnek Değerler <span class="dim">(isteğe bağlı; ; veya | ile ayırın — LLM'e maskeli gider)</span>
+            <label style="grid-column: 1 / -1">Örnek Değerler <span class="dim">(isteğe bağlı; ; veya | ile ayırın — LLM'e ham olarak gider)</span>
               <input name="ornek_degerler_raw" placeholder="örn. TR330006100519786457841326; TR560011100000000012345678">
             </label>
           </div>

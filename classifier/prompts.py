@@ -3,7 +3,6 @@
 import hashlib
 import json
 
-from . import rules
 from .categories import CATEGORY_DEFINITIONS
 
 SYSTEM_PROMPT = f"""Sen bir bankada görevli, KVKK'ya, 5411 sayılı Bankacılık Kanunu'na ve BDDK
@@ -22,13 +21,10 @@ ADIM 1 — AÇILIM: Kolon adının açılımını çıkarmayı dene; tablo adı,
   Sana verilen "olası açılım" ve "sözlük eşleşmesi" ipuçları OTOMATİK üretilmiştir; eksik
   veya yanlış olabilir, körü körüne uyma. Kolon adı anlamsız/anonimleştirilmiş görünüyorsa
   (örn. "col_a1b2c3" gibi bir kod) isimden açılım çıkarmaya ÇALIŞMA; bu durumda tamamen
-  "örnek değerler" (verilmişse), veri tipi ve uzunluğa dayan. Örnek değerler iki tür
-  maskeyle gösterilir: rakam ağırlıklı değerlerde baş/son karakterler korunup ortası
-  yıldızlanır (örn. "12*******34", IBAN'da "TR**...26"); metinsel değerlerde içerik hiç
-  gösterilmez, yalnız desen verilir (büyük harf→X, küçük harf→x, rakam→9; örn. "9 Xx+"
-  kan grubu deseni, "xxxx99@xxxxx.xxx" e-posta deseni olabilir). Maskeli hâliyle bile
-  uzunluk, karakter deseni ve baş/son karakterler güçlü sınıflandırma sinyalidir —
-  verilmişse mutlaka değerlendir.
+  "örnek değerler" (verilmişse), veri tipi ve uzunluğa dayan. Örnek değerler ham olarak
+  verilir (yerel ortamda çalışıyoruz, maskeleme yok); uzunluk, karakter deseni, format
+  (örn. "TR" ile başlayan 26 haneli IBAN, 11 haneli TCKN, kredi kartı numarası) ve değer
+  aralığı güçlü sınıflandırma sinyalleridir — verilmişse mutlaka değerlendir.
 ADIM 2 — OLASI KATEGORİLER: Kolonun girebileceği TÜM kategorileri belirle
   ("olasi_kategoriler" listesi).
 ADIM 3 — ANA KATEGORİ: Olası kategorileri bir kez daha analiz et ve EN UYGUN TEK kategoriyi
@@ -85,9 +81,9 @@ def _render_column_line(i: int, c: dict) -> str:
         parts.append(f"olası açılım (otomatik, hatalı olabilir): {c['note']}")
     if c.get("hints"):
         parts.append(f"sözlük eşleşmesi (otomatik, hatalı olabilir): {json.dumps(c['hints'], ensure_ascii=False)}")
-    samples = [rules.mask_sample(s) for s in (c.get("ornek_degerler") or []) if str(s).strip()]
+    samples = [str(s).strip() for s in (c.get("ornek_degerler") or []) if str(s).strip()]
     if samples:
-        parts.append(f"örnek değerler (maskeli): {', '.join(samples[:5])}")
+        parts.append(f"örnek değerler: {', '.join(samples[:5])}")
     return " | ".join(parts)
 
 
@@ -122,7 +118,7 @@ def build_batch_prompt(
     """Bir tabloya ait kolon grubu için kullanıcı prompt'u.
 
     columns: [{kolon, veri_tipi, uzunluk, nullable, pk, note, hints, ornek_degerler}, ...]
-    ornek_degerler verilmişse LLM'e gitmeden önce maskelenir (bkz. rules.mask_sample).
+    ornek_degerler verilmişse ham olarak LLM'e gönderilir (yerel ortam, maskeleme yok).
     examples: decisions.similar_decisions çıktısı — insan onaylı few-shot örnekleri.
     """
     lines = render_decision_examples(examples) + [
@@ -190,8 +186,8 @@ KURALLAR:
 - Teknik/işlemsel kolonsa "teknik": true yaz ve en yakın kategoriyi ana kategori yap.
 - Kategori 2 varsa 1'i de ekle; tüzel kişi verisi 1/2 olamaz; müşteri bilgisi 5'tir.
 - Kolon adı anlamsız/anonimleştirilmiş görünüyorsa (örn. "col_a1b2c3") isimden açılım
-  çıkarmaya çalışma; "örnek değerler" verilmişse (maskeli olsa bile uzunluk/karakter
-  sınıfı/baştaki-sondaki karakterler güçlü sinyaldir) ve veri tipine dayan.
+  çıkarmaya çalışma; "örnek değerler" verilmişse (ham değerler; uzunluk, format ve
+  değer aralığı güçlü sinyaldir) ve veri tipine dayan.
 
 Önce kolonun ne tutuyor olabileceğine dair 2-3 cümlelik akıl yürütme yap, sonra SON SATIRDA
 sadece şu JSON'u yaz:
@@ -200,8 +196,8 @@ sadece şu JSON'u yaz:
 
 
 def build_judge_prompt(schema: str, table: str, col: dict, first_pass: dict) -> str:
-    samples = [rules.mask_sample(s) for s in (col.get("ornek_degerler") or []) if str(s).strip()]
-    sample_line = f"Örnek değerler (maskeli): {', '.join(samples[:5])}\n" if samples else ""
+    samples = [str(s).strip() for s in (col.get("ornek_degerler") or []) if str(s).strip()]
+    sample_line = f"Örnek değerler: {', '.join(samples[:5])}\n" if samples else ""
     return (
         f"ŞEMA: {schema or '-'}\nTABLO: {table or '-'}\n"
         f"KOLON: {col['kolon']} | tip={col.get('veri_tipi') or '?'}"

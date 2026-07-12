@@ -121,44 +121,6 @@ def keyword_hints(tokens: list[str]) -> dict[str, list[int]]:
     return hits
 
 
-def mask_sample(value) -> str:
-    """Örnek veri değerini LLM'e göndermeden önce maskeler.
-
-    İki strateji var; değerin karakter yapısına göre seçilir:
-
-    - RAKAM AĞIRLIKLI değerler (TCKN, IBAN, telefon, kart no): uzunluk + baştaki/
-      sondaki 1-2 karakter korunur, ortası yıldızlanır ("TR33...26" → "TR**...26").
-      Biçim sinyali (11 hane, "TR" öneki) sınıflandırma için değerlidir; baş/son
-      birkaç rakamın görünmesi tek başına kimliklendirme yapmaz.
-    - METİNSEL değerler (ad-soyad, din, kan grubu gibi az seçenekli/kısa metinler):
-      baş/son karakteri bile göstermek kırılabilir ("İ***m" → "İslam"). Bu yüzden
-      içerik hiç sızdırılmadan yalnız DESEN verilir: büyük harf→X, küçük harf→x,
-      rakam→9, noktalama/boşluk aynen ("0 Rh+" → "9 Xx+", e-posta → "xxxx99@xxxx.xxx").
-      Uzunluk ve yapı korunur, içerik korunmaz.
-    """
-    v = str(value).strip()
-    n = len(v)
-    if n == 0:
-        return ""
-    alnum = [ch for ch in v if ch.isalnum()]
-    digit_heavy = bool(alnum) and sum(ch.isdigit() for ch in alnum) / len(alnum) >= 0.5
-    if digit_heavy:
-        if n <= 2:
-            return "*" * n
-        if n <= 6:
-            return v[0] + "*" * (n - 2) + v[-1]
-        return v[:2] + "*" * (n - 4) + v[-2:]
-    out = []
-    for ch in v:
-        if ch.isdigit():
-            out.append("9")
-        elif ch.isalpha():
-            out.append("X" if ch.isupper() else "x")
-        else:
-            out.append(ch)
-    return "".join(out)
-
-
 def analyze_column(column_name: str, table_name: str) -> dict:
     """Tek kolon için tüm kural çıktıları: açılım notu + ipuçları."""
     exp = expand_column(column_name, table_name)

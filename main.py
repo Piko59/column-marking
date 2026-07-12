@@ -148,7 +148,7 @@ class RowIn(BaseModel):
     kurus: str = ""
     nullable: str = ""
     pk: str = ""
-    # İsteğe bağlı örnek değerler (maskeli olarak prompta gider, bkz. classifier/rules.mask_sample).
+    # İsteğe bağlı örnek değerler (ham olarak prompta gider — yerel/banka içi LLM, maskeleme yok).
     ornek_degerler: list[str] = Field(default_factory=list)
 
 
@@ -187,8 +187,8 @@ async def upload_excel(file: UploadFile = File(...)):
     """Envanter Excel'ini ayrıştırır ve normalize satır listesi döndürür (sınıflandırma yapmaz).
 
     İsteğe bağlı "Örnek Değerler" sütunu tanınır: hücredeki değerler (; | satır sonu veya
-    ", " ile ayrılmış) ornek_degerler listesine çevrilir ve sınıflandırmada maskeli
-    içerik sinyali olarak kullanılır.
+    ", " ile ayrılmış) ornek_degerler listesine çevrilir ve sınıflandırmada ham içerik
+    sinyali olarak kullanılır.
     """
     if not (file.filename or "").lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(400, "Lütfen .xlsx uzantılı bir dosya yükleyin.")
@@ -224,9 +224,8 @@ async def upload_data_table(file: UploadFile = File(...)):
 
     Sistem her kolondan en fazla SAMPLE_VALUES_PER_COLUMN benzersiz, boş olmayan örnek
     değer toplar (ilk SAMPLE_SCAN_ROWS satırı tarar), veri tipini kabaca çıkarır ve
-    envanter formatında satırlar döndürür — sayfa adı tablo adı olur. Ham değerler
-    yalnızca sunucu belleğinde/istemcide kalır; LLM'e giderken maskelenir
-    (classifier/rules.mask_sample)."""
+    envanter formatında satırlar döndürür — sayfa adı tablo adı olur. Örnek değerler LLM'e
+    ham olarak gönderilir (yerel/banka içi LLM, maskeleme yok)."""
     if not (file.filename or "").lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(400, "Lütfen .xlsx uzantılı bir dosya yükleyin.")
     wb = _check_size_and_load(await file.read())

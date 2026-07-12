@@ -404,7 +404,7 @@ function renderTable() {
       <td class="dim">${esc(r.sema)}</td>
       <td>${esc(r.tablo)}</td>
       <td class="mono">${esc(r.kolon)}${(r.ornek_degerler && r.ornek_degerler.length)
-        ? ` <span class="badge tek" title="İçerik sinyali var: ${r.ornek_degerler.length} örnek değer (maskeli gönderilir)">${r.ornek_degerler.length}⛁</span>` : ""}</td>
+        ? ` <span class="badge tek" title="İçerik sinyali var: ${r.ornek_degerler.length} örnek değer (ham olarak gönderilir)">${r.ornek_degerler.length}⛁</span>` : ""}</td>
       <td class="dim">${acilimHtml(res)}</td>
       <td class="dim">${esc(r.veri_tipi)}${r.uzunluk ? "(" + esc(r.uzunluk) + ")" : ""}</td>
       <td class="dim">${r.pk === "1" ? "PK" : ""}</td>
