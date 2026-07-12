@@ -85,6 +85,47 @@ function confHtml(result) {
          (src ? `<span class="src-tag">${src}</span>` : "");
 }
 
+// Olasılık dağılımı (tekil sorgu için): tüm 7 kategori, her birine atanan olasılık,
+// azalan sırada. Model olasılık döndürmediyse "olasılık bilgisi yok" uyarısı.
+function probsHtml(result) {
+  if (!result || result.kaynak === "hata") return "";
+  const olas = result.olasiliklar || {};
+  if (!Object.keys(olas).length) {
+    return '<span class="prob-empty">Model olasılık dağılımı döndürmedi (eski format veya önbellek).</span>';
+  }
+  // 7 kategori tam listesi — verilmeyenlere 0 ata
+  const all = [1, 2, 3, 4, 5, 6, 7].map((id) => ({
+    id, p: olas[id] ?? 0,
+  }));
+  all.sort((a, b) => b.p - a.p);
+  const ana = result.ana_kategori;
+  const rows = all.map(({ id, p }) => {
+    const pct = Math.round(p * 100);
+    const cls = [];
+    if (id === ana) cls.push("winner");
+    else if (p > 0) cls.push("dim");
+    else cls.push("zero");
+    const name = state.categories[id] || "";
+    return `<div class="prob-row ${cls.join(" ")}">
+      <span class="badge c${id}">${id}. ${esc(name)}</span>
+      <span class="prob-track"><span class="prob-fill" style="width:${Math.max(pct, p > 0 ? 2 : 0)}%; background:var(--cat${id})"></span></span>
+      <span class="prob-val">${pct}%</span>
+    </div>`;
+  }).join("");
+  // Marj göstergesi
+  const marj = result.marj;
+  let marginTag = "";
+  if (marj != null) {
+    const tight = marj < 0.25;
+    marginTag = `<div class="margin-row">
+      <span>Marj (en yüksek iki olasılık arası fark):</span>
+      <span class="margin-chip ${tight ? "tight" : "sharp"}">${marj.toFixed(2)}</span>
+      <span>${tight ? "— model gerçekten kararsız" : "— model net"}</span>
+    </div>`;
+  }
+  return `<div class="prob-dist">${rows}</div>${marginTag}`;
+}
+
 // ============ İnsan inceleme (Onayla / Düzelt / Nötr) ============
 const REVIEW_LABELS = { onayla: "Onaylandı", duzelt: "Düzeltildi", notr: "Nötr" };
 
@@ -490,6 +531,7 @@ function renderSingleResult(row, result, analysis) {
         : "-"
     }</div>
     <div class="result-block"><h3>Tüm Olası Kategoriler</h3>${badgeHtml(result)}</div>
+    <div class="result-block"><h3>Olasılık Dağılımı</h3>${probsHtml(result)}</div>
     <div class="result-block"><h3>Güven</h3>${confHtml(result) || "-"}</div>
     <div class="result-block"><h3>Gerekçe</h3><div class="result-reason">${esc(result.gerekce) || "-"}</div></div>
     ${analysis.note ? `<div class="result-block"><h3>Önek Çözümü</h3><div class="result-reason">${esc(analysis.note)}</div></div>` : ""}

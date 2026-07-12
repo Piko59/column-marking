@@ -12,7 +12,7 @@ aşağıdaki 7 kategoriye göre sınıflandırmak ve her kolon için TEK BİR AN
 KATEGORİLER:
 {CATEGORY_DEFINITIONS}
 
-HER KOLON İÇİN ŞU 4 ADIMI SIRAYLA UYGULA:
+HER KOLON İÇİN ŞU 3 ADIMI SIRAYLA UYGULA:
 ADIM 1 — AÇILIM: Kolon adının açılımını çıkarmayı dene; tablo adı, şema adı, bankacılık
   jargonu (mus=müşteri, hsp=hesap, krd=kredi, acc=account, cust=customer, txn=transaction)
   ve veri tipinden yararlan. Kolon başındaki önek çoğu zaman tablo adının kısaltmasıdır ama
@@ -38,11 +38,7 @@ ADIM 2 — OLASI KATEGORİLER (OLASILIK DAĞILIMI): Kolonun girebileceği TÜM k
 ADIM 3 — ANA KATEGORİ: Olasılık dağılımını bir kez daha analiz et ve EN UYGUN TEK
   kategoriyi "ana_kategori" olarak seç. Olasılıklar çok yakınsa (örn. 0.45 vs 0.40)
   korunması en sıkı olanı seç; öncelik sırası: 2 > 3 > 7 > 5 > 4 > 6 > 1.
-ADIM 4 — GÜVEN: "guven" alanına KARARININ doğruluğuna olan güvenini yaz (0-1). Bu,
-  verdiğin olasılık dağılımına ne kadar güvendiğindir; dağılım keskin (tek bir
-  kategoriye yakın 1.0) ise yüksek, yayvan ise düşük olmalı. Teknik bir kolonu teknik
-  olarak tanıdıysan güvenin yüksek olabilir; asıl düşük güven, kolonun ne tuttuğundan
-  emin olamadığın durumdur.
+NOT: "guven" alanı DÖNDÜRME — sistem, güveni olasılık dağılımından otomatik türetir.
 
 KARAR KURALLARI:
 - Her kolona en az bir olası kategori ve mutlaka bir ana kategori ata. Hiçbir kategori
@@ -62,7 +58,8 @@ Her kolon için, giriş sırasıyla aynı olacak şekilde bir nesne:
 [{{"kolon": "<kolon adı>", "acilim": "<açılım veya null>",
   "olasi_kategoriler": [{{"id": <kategori_id>, "olasilik": <0-1>}}, ...],
   "ana_kategori": <tek id>,
-  "teknik": <true|false>, "guven": <0-1>, "gerekce": "<tek cümle Türkçe>"}}]
+  "teknik": <true|false>, "gerekce": "<tek cümle Türkçe>"}}]
+"guven" alanı DÖNDÜRME (sistem dağılımdan otomatik türetir).
 Olasılıklar toplamı 1.0 olmalı; %1'den küçük olasılıkları listeleME.
 Girdi BİRDEN FAZLA "=== TABLO: ... ===" bölümü içeriyorsa (tek istekte birden çok küçük
 tablo birleştirilmiş demektir), her nesneye ayrıca "tablo": "<o bölümün tablo adı>" ekle
@@ -70,11 +67,11 @@ tablo birleştirilmiş demektir), her nesneye ayrıca "tablo": "<o bölümün ta
 BİRBİRİNE KARIŞTIRMA; her bölümü yalnız kendi ŞEMA/TABLO bağlamıyla değerlendir.
 
 ÖRNEK — TABLO: CustomerCard için girdi kolonları ccCardNo, ccCvvEnc, ccTaxNo, ccMarginRate, ccRowVer:
-[{{"kolon":"ccCardNo","acilim":"Customer Card - Card Number","olasi_kategoriler":[{{"id":3,"olasilik":0.70}},{{"id":5,"olasilik":0.20}},{{"id":7,"olasilik":0.10}}],"ana_kategori":3,"teknik":false,"guven":0.90,"gerekce":"Kart numarası (PAN) BDDK'ya göre hassas veridir; müşteri sırrıdır ve şifreli saklanması gerekir, ana kategori hassas veridir."}},
-{{"kolon":"ccCvvEnc","acilim":"Customer Card - CVV (Encrypted)","olasi_kategoriler":[{{"id":3,"olasilik":0.60}},{{"id":7,"olasilik":0.35}},{{"id":5,"olasilik":0.05}}],"ana_kategori":3,"teknik":false,"guven":0.88,"gerekce":"CVV kimlik doğrulama verisidir; şifreli saklanan müşteri kart bilgisidir."}},
-{{"kolon":"ccTaxNo","acilim":"Customer Card - Tax Number","olasi_kategoriler":[{{"id":1,"olasilik":0.55}},{{"id":5,"olasilik":0.45}}],"ana_kategori":1,"teknik":false,"guven":0.72,"gerekce":"Vergi no gerçek kişi müşteride kişisel veridir; ancak müşteri ilişkisini de gösterir, iki kategori arasında yakın olasılık."}},
-{{"kolon":"ccMarginRate","acilim":"Customer Card - Margin Rate","olasi_kategoriler":[{{"id":4,"olasilik":1.00}}],"ana_kategori":4,"teknik":false,"guven":0.78,"gerekce":"Bankanın iç fiyatlama marjı banka sırrıdır."}},
-{{"kolon":"ccRowVer","acilim":null,"olasi_kategoriler":[{{"id":6,"olasilik":1.00}}],"ana_kategori":6,"teknik":true,"guven":0.85,"gerekce":"Teknik versiyon kolonudur; hiçbir kategoriye net girmediğinden en yakın olarak iç sistem bilgisi sayıldı."}}]"""
+[{{"kolon":"ccCardNo","acilim":"Customer Card - Card Number","olasi_kategoriler":[{{"id":3,"olasilik":0.70}},{{"id":5,"olasilik":0.20}},{{"id":7,"olasilik":0.10}}],"ana_kategori":3,"teknik":false,"gerekce":"Kart numarası (PAN) BDDK'ya göre hassas veridir; müşteri sırrıdır ve şifreli saklanması gerekir, ana kategori hassas veridir."}},
+{{"kolon":"ccCvvEnc","acilim":"Customer Card - CVV (Encrypted)","olasi_kategoriler":[{{"id":3,"olasilik":0.60}},{{"id":7,"olasilik":0.35}},{{"id":5,"olasilik":0.05}}],"ana_kategori":3,"teknik":false,"gerekce":"CVV kimlik doğrulama verisidir; şifreli saklanan müşteri kart bilgisidir."}},
+{{"kolon":"ccTaxNo","acilim":"Customer Card - Tax Number","olasi_kategoriler":[{{"id":1,"olasilik":0.55}},{{"id":5,"olasilik":0.45}}],"ana_kategori":1,"teknik":false,"gerekce":"Vergi no gerçek kişi müşteride kişisel veridir; ancak müşteri ilişkisini de gösterir, iki kategori arasında yakın olasılık."}},
+{{"kolon":"ccMarginRate","acilim":"Customer Card - Margin Rate","olasi_kategoriler":[{{"id":4,"olasilik":1.00}}],"ana_kategori":4,"teknik":false,"gerekce":"Bankanın iç fiyatlama marjı banka sırrıdır."}},
+{{"kolon":"ccRowVer","acilim":null,"olasi_kategoriler":[{{"id":6,"olasilik":1.00}}],"ana_kategori":6,"teknik":true,"gerekce":"Teknik versiyon kolonudur; hiçbir kategoriye net girmediğinden en yakın olarak iç sistem bilgisi sayıldı."}}]"""
 
 
 def _render_column_line(i: int, c: dict) -> str:
@@ -144,7 +141,7 @@ def build_batch_prompt(
     lines.append("")
     lines.append(
         f"Bu {len(columns)} kolonun tamamını sınıflandır ve aynı sırayla JSON dizisi döndür. "
-        "Her kolonda 4 adımı uygula: açılım → olası kategoriler → tek ana kategori → güven."
+        "Her kolonda 3 adımı uygula: açılım → olası kategoriler (olasılıklarla) → tek ana kategori."
     )
     return "\n".join(lines)
 
@@ -178,14 +175,14 @@ def build_multi_table_prompt(
     lines.append(
         f"Toplam {n} kolonun tamamını sınıflandır ve aynı sırayla JSON dizisi döndür; her "
         'nesneye hangi tabloya ait olduğunu belirten "tablo" alanını da ekle. Her kolonda '
-        "4 adımı uygula: açılım → olası kategoriler → tek ana kategori → güven."
+        "3 adımı uygula: açılım → olası kategoriler (olasılıklarla) → tek ana kategori."
     )
     return "\n".join(lines)
 
 
 JUDGE_SYSTEM_PROMPT = f"""Sen bankacılık veri sınıflandırmasında son sözü söyleyen kıdemli bir
-denetçisin. Sana bir veritabanı kolonu ve düşük güvenle yapılmış ilk sınıflandırma denemesi
-verilecek. Görevin adım adım düşünüp NİHAİ kararı vermek.
+denetçisin. Sana bir veritabanı kolonu ve olasılık dağılımı belirsiz görünen bir ilk
+sınıflandırma denemesi verilecek. Görevin adım adım düşünüp NİHAİ kararı vermek.
 
 KATEGORİLER:
 {CATEGORY_DEFINITIONS}
@@ -193,8 +190,9 @@ KATEGORİLER:
 KURALLAR:
 - Önce kolon adının olası açılımını düşün (tablo adı, bankacılık jargonu). Emin değilsen
   açılım uydurma (acilim=null); veri tipi ve bağlamdan yürü.
-- Olası kategorileri belirle, sonra bir kez daha analiz ederek EN UYGUN TEK ana kategoriyi
-  seç. Eşitlik hâlinde öncelik: 2 > 3 > 7 > 5 > 4 > 6 > 1.
+- Olası kategorileri OLASILIK DAĞILIMI olarak belirle (toplam 1.0, %1'in altı listelenmez),
+  sonra bir kez daha analiz ederek EN UYGUN TEK ana kategoriyi seç. Eşitlik hâlinde
+  öncelik: 2 > 3 > 7 > 5 > 4 > 6 > 1.
 - Teknik/işlemsel kolonsa "teknik": true yaz ve en yakın kategoriyi ana kategori yap.
 - Kategori 2 varsa 1'i de ekle; tüzel kişi verisi 1/2 olamaz; müşteri bilgisi 5'tir.
 - Kolon adı anlamsız/anonimleştirilmiş görünüyorsa (örn. "col_a1b2c3") isimden açılım
@@ -206,7 +204,8 @@ sadece şu JSON'u yaz:
 {{"acilim": "<açılım veya null>",
  "olasi_kategoriler": [{{"id": <kategori_id>, "olasilik": <0-1>}}, ...],
  "ana_kategori": <tek id>, "teknik": <true|false>,
- "guven": <0-1>, "gerekce": "<tek cümle>"}}
+ "gerekce": "<tek cümle>"}}
+"guven" alanı DÖNDÜRME — sistem, güveni olasılık dağılımından otomatik türetir.
 Olasılıklar toplamı 1.0 olmalı; %1'den küçük olasılıkları listeleME."""
 
 

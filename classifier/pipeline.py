@@ -72,21 +72,23 @@ def _save_cache() -> None:
 
 # --- Sonuç doğrulama ---------------------------------------------------------
 
-def _parse_olasi_kategoriler(raw) -> tuple[list[int], dict[int, float]]:
+def _parse_olasi_kategoriler(raw) -> tuple[list[int], dict[int, float], bool]:
     """LLM çıktısındaki olası kategorileri ayrıştırır: yeni format ({{id, olasilik}})
     ve eski format (yalnız id listesi) ikisini de kabul eder.
 
-    Dönüş: (benzersiz id listesi, {{id: olasılık}} sözlüğü).
-    - Yeni formatta olasılıklar [0,1] aralığında kırpılır.
-    - Eski formatta tüm id'ler eşit ağırlıklı (1.0) kabul edilir — geri uyum.
+    Dönüş: (benzersiz id listesi, {{id: olasılık}} sözlüğü, olasılık_bilgisi_var).
+    - Yeni formatta olasılıklar [0,1] aralığında kırpılır; flag=True.
+    - Eski formatta (yalnız id listesi) flag=False — sistemin olasılık bilgisi YOK.
     - Geçersiz id'ler (kategori sözlüğünde olmayan) filtrelenir.
     """
-    if not isinstance(raw, list):
-        return [], {}
+    if not isinstance(raw, list) or not raw:
+        return [], {}, False
     cats: list[int] = []
     olas: dict[int, float] = {}
+    has_probs = False
     for item in raw:
         if isinstance(item, dict):
+            has_probs = True
             cid = item.get("id")
             try:
                 prob = float(item.get("olasilik", 0))
@@ -95,7 +97,7 @@ def _parse_olasi_kategoriler(raw) -> tuple[list[int], dict[int, float]]:
             prob = max(0.0, min(1.0, prob))
         else:
             cid = item
-            prob = 1.0
+            prob = 0.0  # eski formatta olasılık bilinmez (1.0 değil — gerçek sinyal yok)
         if not str(cid).isdigit():
             continue
         cid_int = int(cid)
@@ -104,12 +106,12 @@ def _parse_olasi_kategoriler(raw) -> tuple[list[int], dict[int, float]]:
         if cid_int not in olas:
             cats.append(cid_int)
             olas[cid_int] = prob
-    return cats, olas
+    return cats, olas, has_probs
 
 
 def _sanitize(result: dict, column_name: str, source: str) -> dict:
     raw = result.get("olasi_kategoriler") or result.get("kategoriler") or []
-    cats, olas = _parse_olasi_kategoriler(raw)
+    cats, olas, has_probs = _parse_olasi_kategoriler(raw)
 
     # Olasılığa göre azalan sırala; eşitlikte CATEGORY_PRIORITY kazananır.
     # (Yani model tüm kategorilere aynı olasılığı verdiyse, mevzuattaki
@@ -122,7 +124,7 @@ def _sanitize(result: dict, column_name: str, source: str) -> dict:
     if 2 in olas and 1 not in olas:
         cats.insert(0, 1)
         # 1'i minimal olasılıkla ekle — 2'nin mantıksal gereği, ayrı bir sinyal değil
-        olas[1] = 0.01
+        olas[1] = 0.01 if has_probs else 0.0
 
     cats = sorted(cats, key=sort_key)
 
@@ -133,12 +135,8 @@ def _sanitize(result: dict, column_name: str, source: str) -> dict:
         ana = cats[0]
     if ana is not None and ana not in olas:
         cats = sorted(cats + [ana], key=sort_key)
-        olas[ana] = 0.01  # LLM'in listesinden değil, sonradan eklenmiş
+        olas[ana] = 0.01 if has_probs else 0.0
 
-    try:
-        conf = max(0.0, min(1.0, float(result.get("guven", 0))))
-    except (TypeError, ValueError):
-        conf = 0.0
     acilim = result.get("acilim")
     if acilim in (None, "null", "None"):
         acilim = ""
@@ -146,25 +144,35 @@ def _sanitize(result: dict, column_name: str, source: str) -> dict:
     # Marj: olasılık sıralı iken ilk iki kategori arasındaki fark.
     # Yüksek (>0.30) → model net bir kazanan görüyor.
     # Düşük (<JUDGE_MARGIN_THRESHOLD) → model gerçekten kararsız, hakem tetiklenir.
+    # Eski format (has_probs=False) için marj=0 — olasılık bilgisi yok.
     probs_sorted = [olas[c] for c in cats]
-    if len(probs_sorted) >= 2:
+    if not has_probs:
+        marj = 0.0
+    elif len(probs_sorted) >= 2:
         marj = round(probs_sorted[0] - probs_sorted[1], 3)
     elif len(probs_sorted) == 1:
         marj = round(probs_sorted[0], 3)  # tek kategori: tam emin
     else:
         marj = 0.0
 
+    # Güven = Marj. Modelin "guven" alanı artık yok sayılıyor — olasılık dağılımından
+    # türetiliyor. Bu, UI'da tutarsız sayı göstermeyi önler ve hakem kabul/red kararını
+    # sağlam bir metrik (marj) üzerine oturtur.
+    # Eski format (has_probs=False) için guven=0.0 — olasılık bilgisi yok.
+    guven = marj
+
     return {
         "kolon": column_name,
         "acilim": str(acilim)[:200],
         "kategoriler": cats,
-        "olasiliklar": {c: round(olas[c], 3) for c in cats},
+        "olasiliklar": {c: round(olas[c], 3) for c in cats} if has_probs else {},
         "marj": marj,
+        "olasilik_bilgisi_var": has_probs,
         "kategori_adlari": [CATEGORIES[c] for c in cats],
         "ana_kategori": ana,
         "ana_kategori_adi": CATEGORIES.get(ana, ""),
         "teknik": bool(result.get("teknik")),
-        "guven": round(conf, 2),
+        "guven": round(guven, 2),
         "gerekce": str(result.get("gerekce") or "")[:500],
         "kaynak": source,  # "llm" | "llm+hakem" | "llm+hakem_ret" | "cache" | "hata"
     }
@@ -297,12 +305,12 @@ def _pack_into_superbatches(
 
 
 async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
-    """Aşama 2: düşük güvenli/belirsiz kolon için hakem geçişi.
+    """Aşama 2: olasılık dağılımı belirsiz kolon için hakem geçişi.
 
-    Hakem cevabının güveni ilk denemenin altındaysa İLK sonucu koruruz — aksi hâlde
-    hakem "belki yanlış olanı belki daha yanlış olanla değiştir" haline gelir.
-    Kabul edilen hakem sonucu "llm+hakem", reddedilen "llm+hakem_ret" olarak işaretlenir
-    (izlenebilirlik için ayırt edilir).
+    Hakemin dağılımından türetilen marj, ilk denemenin marjından düşükse İLK sonucu
+    koruruz — aksi hâlde hakem "belki yanlış olanı belki daha yanlış olanla değiştir"
+    haline gelir. Kabul edilen hakem sonucu "llm+hakem", reddedilen "llm+hakem_ret"
+    olarak işaretlenir (izlenebilirlik için ayırt edilir).
     """
     try:
         # temperature verilmez: config.LLM_TEMPERATURE'a düşer (varsayılan 0 —
@@ -315,18 +323,22 @@ async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
         if isinstance(parsed, list):
             parsed = parsed[-1] if parsed else {}
         candidate = _sanitize(parsed, col["kolon"], "llm+hakem")
-        # Hakem kendisi ilk denemeden daha az emin — ilk sonucu koru.
-        if candidate["guven"] < first_pass["guven"]:
+        # Hakem, ilk denemeden daha az net (marj düşmüş) — ilk sonucu koru.
+        # (marj == guven — olasılık dağılımından türetiliyor)
+        if candidate["marj"] < first_pass["marj"]:
             kept = dict(first_pass)
             kept["kaynak"] = "llm+hakem_ret"
             kept["hakem_denemesi"] = {
                 "kategoriler": candidate["kategoriler"],
                 "ana_kategori": candidate["ana_kategori"],
-                "guven": candidate["guven"],
+                "marj": candidate["marj"],
+                "olasiliklar": candidate["olasiliklar"],
             }
             return kept
         candidate["ilk_deneme"] = {
-            "kategoriler": first_pass["kategoriler"], "guven": first_pass["guven"],
+            "kategoriler": first_pass["kategoriler"],
+            "marj": first_pass["marj"],
+            "olasiliklar": first_pass.get("olasiliklar") or {},
         }
         return candidate
     except Exception:
@@ -413,21 +425,22 @@ async def classify_rows(
             group_results = await _classify_multi_group(table_groups, examples=examples)
             chunk = [pair for _, items in sb for pair in items]
 
-        # 4: hakem geçişi — iki tetikleyici:
-        #   (a) güven eşiğin altında (model kendi kararına şüpheli),
-        #   (b) marj < JUDGE_MARGIN_THRESHOLD (en yüksek iki olasılık birbirine yakın;
-        #       model gerçekten kararsız). Bu, "çoklu kategori = belirsiz" kaba kuralından
-        #       çok daha sağlam — model 95% emin olup sadece protokol gereği diğer
-        #       kategorileri listelediğinde boşuna hakem çağırmıyor.
+        # 4: hakem geçişi — tek tetikleyici:
+        #   marj < JUDGE_MARGIN_THRESHOLD (en yüksek iki olasılık birbirine yakın;
+        #   model gerçekten kararsız). Güven artık marjdan türetiliyor (guven == marj),
+        #   bu yüzden ayrı bir "low_conf" sinyali gereksiz.
+        # Eski format (olasılık bilgisi yok, has_probs=False) sonuçları hakeme gitmez —
+        #   zaten marj=0 ve olasılık yoksa hakeme ne sorduğumuzu bilemeyiz.
         # Model bilinçli olarak "teknik" işaretlediği kolonlar hakeme gitmez (hız için kritik).
         if use_judge:
             judge_tasks = []
             for j, res in enumerate(group_results):
                 if res["kaynak"] != "llm" or res["teknik"]:
                     continue
-                low_conf = res["guven"] < config.JUDGE_THRESHOLD
+                if not res.get("olasilik_bilgisi_var"):
+                    continue  # eski format / önbellek — olasılık yok, hakem tetiklenmez
                 tight_margin = res.get("marj", 1.0) < config.JUDGE_MARGIN_THRESHOLD
-                if not (low_conf or tight_margin):
+                if not tight_margin:
                     continue
                 _, col = chunk[j]
                 judge_tasks.append((j, _judge(str(col.get("sema", "")), str(col.get("tablo", "")), col, res)))
