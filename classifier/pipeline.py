@@ -72,23 +72,69 @@ def _save_cache() -> None:
 
 # --- Sonuç doğrulama ---------------------------------------------------------
 
+def _parse_olasi_kategoriler(raw) -> tuple[list[int], dict[int, float]]:
+    """LLM çıktısındaki olası kategorileri ayrıştırır: yeni format ({{id, olasilik}})
+    ve eski format (yalnız id listesi) ikisini de kabul eder.
+
+    Dönüş: (benzersiz id listesi, {{id: olasılık}} sözlüğü).
+    - Yeni formatta olasılıklar [0,1] aralığında kırpılır.
+    - Eski formatta tüm id'ler eşit ağırlıklı (1.0) kabul edilir — geri uyum.
+    - Geçersiz id'ler (kategori sözlüğünde olmayan) filtrelenir.
+    """
+    if not isinstance(raw, list):
+        return [], {}
+    cats: list[int] = []
+    olas: dict[int, float] = {}
+    for item in raw:
+        if isinstance(item, dict):
+            cid = item.get("id")
+            try:
+                prob = float(item.get("olasilik", 0))
+            except (TypeError, ValueError):
+                prob = 0.0
+            prob = max(0.0, min(1.0, prob))
+        else:
+            cid = item
+            prob = 1.0
+        if not str(cid).isdigit():
+            continue
+        cid_int = int(cid)
+        if cid_int not in CATEGORIES:
+            continue
+        if cid_int not in olas:
+            cats.append(cid_int)
+            olas[cid_int] = prob
+    return cats, olas
+
+
 def _sanitize(result: dict, column_name: str, source: str) -> dict:
-    cats = result.get("olasi_kategoriler") or result.get("kategoriler") or []
-    if not isinstance(cats, list):
-        cats = []
-    cats = sorted({int(c) for c in cats if str(c).isdigit() and int(c) in CATEGORIES})
-    # Kategori 2 her zaman 1'i de içerir
-    if 2 in cats and 1 not in cats:
+    raw = result.get("olasi_kategoriler") or result.get("kategoriler") or []
+    cats, olas = _parse_olasi_kategoriler(raw)
+
+    # Olasılığa göre azalan sırala; eşitlikte CATEGORY_PRIORITY kazananır.
+    # (Yani model tüm kategorilere aynı olasılığı verdiyse, mevzuattaki
+    # "en sıkı koruma" önceliği uygulanır — kategori 2 > 3 > 7 > 5 > 4 > 6 > 1.)
+    def sort_key(c: int):
+        priority_idx = CATEGORY_PRIORITY.index(c) if c in CATEGORY_PRIORITY else 999
+        return (-olas.get(c, 0.0), priority_idx)
+
+    # Kategori 2 her zaman 1'i de içerir (kanun gereği)
+    if 2 in olas and 1 not in olas:
         cats.insert(0, 1)
-    # Tek ana kategori; geçersizse olası listeden ilkine düş
+        # 1'i minimal olasılıkla ekle — 2'nin mantıksal gereği, ayrı bir sinyal değil
+        olas[1] = 0.01
+
+    cats = sorted(cats, key=sort_key)
+
+    # Tek ana kategori; geçersizse olasılık sırasına göre ilkine düş
     ana = result.get("ana_kategori")
     ana = int(ana) if str(ana).isdigit() and int(ana) in CATEGORIES else None
     if ana is None and cats:
-        # LLM ana kategori vermediyse/geçersizse, prompt'ta tanımlı öncelik sırasına göre düş
-        # (cats[0] her zaman en küçük id'ye düşerdi; bu, "en sıkı kategori kazanır" kuralını çiğniyordu)
-        ana = next((c for c in CATEGORY_PRIORITY if c in cats), cats[0])
-    if ana is not None and ana not in cats:
-        cats = sorted(cats + [ana])
+        ana = cats[0]
+    if ana is not None and ana not in olas:
+        cats = sorted(cats + [ana], key=sort_key)
+        olas[ana] = 0.01  # LLM'in listesinden değil, sonradan eklenmiş
+
     try:
         conf = max(0.0, min(1.0, float(result.get("guven", 0))))
     except (TypeError, ValueError):
@@ -96,17 +142,31 @@ def _sanitize(result: dict, column_name: str, source: str) -> dict:
     acilim = result.get("acilim")
     if acilim in (None, "null", "None"):
         acilim = ""
+
+    # Marj: olasılık sıralı iken ilk iki kategori arasındaki fark.
+    # Yüksek (>0.30) → model net bir kazanan görüyor.
+    # Düşük (<JUDGE_MARGIN_THRESHOLD) → model gerçekten kararsız, hakem tetiklenir.
+    probs_sorted = [olas[c] for c in cats]
+    if len(probs_sorted) >= 2:
+        marj = round(probs_sorted[0] - probs_sorted[1], 3)
+    elif len(probs_sorted) == 1:
+        marj = round(probs_sorted[0], 3)  # tek kategori: tam emin
+    else:
+        marj = 0.0
+
     return {
         "kolon": column_name,
         "acilim": str(acilim)[:200],
         "kategoriler": cats,
+        "olasiliklar": {c: round(olas[c], 3) for c in cats},
+        "marj": marj,
         "kategori_adlari": [CATEGORIES[c] for c in cats],
         "ana_kategori": ana,
         "ana_kategori_adi": CATEGORIES.get(ana, ""),
         "teknik": bool(result.get("teknik")),
         "guven": round(conf, 2),
         "gerekce": str(result.get("gerekce") or "")[:500],
-        "kaynak": source,  # "llm" | "llm+hakem" | "cache" | "hata"
+        "kaynak": source,  # "llm" | "llm+hakem" | "llm+hakem_ret" | "cache" | "hata"
     }
 
 
@@ -353,17 +413,21 @@ async def classify_rows(
             group_results = await _classify_multi_group(table_groups, examples=examples)
             chunk = [pair for _, items in sb for pair in items]
 
-        # 4: hakem geçişi — iki tetikleyici: (a) güven eşiğin altında, (b) model üç ya da
-        # daha fazla olası kategori döndürdü (gerçek belirsizlik sinyali). Model bilinçli
-        # olarak "teknik" işaretlediği kolonlar hakeme gitmez (hız için kritik).
+        # 4: hakem geçişi — iki tetikleyici:
+        #   (a) güven eşiğin altında (model kendi kararına şüpheli),
+        #   (b) marj < JUDGE_MARGIN_THRESHOLD (en yüksek iki olasılık birbirine yakın;
+        #       model gerçekten kararsız). Bu, "çoklu kategori = belirsiz" kaba kuralından
+        #       çok daha sağlam — model 95% emin olup sadece protokol gereği diğer
+        #       kategorileri listelediğinde boşuna hakem çağırmıyor.
+        # Model bilinçli olarak "teknik" işaretlediği kolonlar hakeme gitmez (hız için kritik).
         if use_judge:
             judge_tasks = []
             for j, res in enumerate(group_results):
                 if res["kaynak"] != "llm" or res["teknik"]:
                     continue
                 low_conf = res["guven"] < config.JUDGE_THRESHOLD
-                ambiguous = len(res["kategoriler"]) >= 3
-                if not (low_conf or ambiguous):
+                tight_margin = res.get("marj", 1.0) < config.JUDGE_MARGIN_THRESHOLD
+                if not (low_conf or tight_margin):
                     continue
                 _, col = chunk[j]
                 judge_tasks.append((j, _judge(str(col.get("sema", "")), str(col.get("tablo", "")), col, res)))

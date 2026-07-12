@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/Users/ibrahimhalil/miniforge3/bin/python3 --version)",
+      "Bash(/Users/ibrahimhalil/miniforge3/bin/python3 -c \"import fastapi, httpx, openpyxl, dotenv; print\\('deps ok'\\)\")"
+    ]
+  }
+}

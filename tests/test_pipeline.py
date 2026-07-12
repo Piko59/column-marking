@@ -56,8 +56,13 @@ class TestErrorResult:
 
 class TestSanitize:
     def test_category_2_always_implies_1(self):
+        # Kategori 2 verildiğinde sistem otomatik olarak 1'i de ekler (kanun gereği).
+        # Sıralama olasılığa göre azalan: 2 (gerçek sinyal, prob=1.0) önce, 1
+        # (mantıksal gereği, prob=0.01) sonra.
         result = _sanitize({"olasi_kategoriler": [2], "ana_kategori": 2, "guven": 0.9}, "col", "llm")
-        assert result["kategoriler"] == [1, 2]
+        assert result["kategoriler"] == [2, 1]
+        assert set(result["kategoriler"]) == {1, 2}
+        assert result["ana_kategori"] == 2
 
     def test_ana_kategori_fallback_uses_priority_not_min_id(self):
         # ana_kategori verilmemiş; olası kategoriler [1, 5] -> öncelik sırasında (2>3>7>5>4>6>1)
@@ -193,22 +198,23 @@ class TestJudgeAcceptance:
 
 
 class TestJudgeTrigger:
-    """Hakem tetikleyicisi: düşük güven VEYA ≥3 olası kategori (belirsizlik)."""
+    """Hakem tetikleyicisi: düşük güven VEYA olasılık marjı < eşik (gerçek belirsizlik)."""
 
     @pytest.mark.asyncio
-    async def test_high_conf_but_ambiguous_categories_triggers_hakem(self, monkeypatch):
-        # Model 3 kategoriye emin gibi görünüyor (guven=0.90) — tetiklenmeli.
+    async def test_mid_conf_legacy_format_triggers_hakem(self, monkeypatch):
+        # Model eski formatta (yalnız id listesi) 3 kategori döndürüyor — olasılıklar
+        # yok, bu yüzden hepsi eşit olasılıklı sayılır, marj=0 → hakem tetiklenmeli.
         chat_calls: list[str] = []
 
         async def fake_chat(system, user, temperature=None):
             chat_calls.append(system)
             import json
-            # İlk çağrı aslam sınıflandırma, ikinci çağrı hakem
+            # İlk çağrı asıl sınıflandırma, ikinci çağrı hakem
             if len(chat_calls) == 1:
                 return json.dumps([{
                     "kolon": "iban", "acilim": "IBAN",
                     "olasi_kategoriler": [1, 3, 5], "ana_kategori": 5,
-                    "teknik": False, "guven": 0.90, "gerekce": "belirsiz",
+                    "teknik": False, "guven": 0.82, "gerekce": "belirsiz",
                 }])
             return json.dumps({
                 "acilim": "IBAN", "olasi_kategoriler": [5], "ana_kategori": 5,
@@ -220,12 +226,39 @@ class TestJudgeTrigger:
             [{"kolon": "iban", "tablo": "MusteriHesap", "sema": "core", "veri_tipi": "varchar"}],
             use_judge=True, mode="name_only",
         )
-        assert len(chat_calls) == 2, "Hakem tetiklenmedi (≥3 olası kategori var, tetiklenmeliydi)"
+        assert len(chat_calls) == 2, "Legacy format (olasılıksız) marj=0; hakem tetiklenmeliydi"
         assert results[0]["kaynak"] == "llm+hakem"
 
     @pytest.mark.asyncio
+    async def test_high_conf_three_categories_does_not_trigger(self, monkeypatch):
+        # Model 3 kategori döndürüyor AMA olasılık dağılımı keskin (marj=0.80):
+        # birini kesin seçmiş, diğerleri sadece ihtimal dahilinde.
+        chat_calls: list[str] = []
+
+        async def fake_chat(system, user, temperature=None):
+            chat_calls.append(system)
+            import json
+            return json.dumps([{
+                "kolon": "tckn", "acilim": "TC Kimlik No",
+                "olasi_kategoriler": [
+                    {"id": 1, "olasilik": 0.90},
+                    {"id": 5, "olasilik": 0.07},
+                    {"id": 3, "olasilik": 0.03},
+                ],
+                "ana_kategori": 1,
+                "teknik": False, "guven": 0.95, "gerekce": "kişisel veri",
+            }])
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+        await classify_rows(
+            [{"kolon": "tckn", "tablo": "Musteri", "sema": "core", "veri_tipi": "varchar"}],
+            use_judge=True, mode="name_only",
+        )
+        assert len(chat_calls) == 1, "Keskin olasılık dağılımı (marj=0.83); hakem tetiklenmemeli"
+
+    @pytest.mark.asyncio
     async def test_high_conf_two_categories_does_not_trigger(self, monkeypatch):
-        # 2 olası kategori + yüksek güven — hakem tetiklenmemeli.
+        # 2 olası kategori + keskin olasılık (marj=0.90) — hakem tetiklenmemeli.
         chat_calls: list[str] = []
 
         async def fake_chat(system, user, temperature=None):
@@ -233,7 +266,11 @@ class TestJudgeTrigger:
             import json
             return json.dumps([{
                 "kolon": "ad", "acilim": "Ad",
-                "olasi_kategoriler": [1, 5], "ana_kategori": 5,
+                "olasi_kategoriler": [
+                    {"id": 5, "olasilik": 0.95},
+                    {"id": 1, "olasilik": 0.05},
+                ],
+                "ana_kategori": 5,
                 "teknik": False, "guven": 0.95, "gerekce": "müşteri kimlik",
             }])
 
@@ -242,7 +279,41 @@ class TestJudgeTrigger:
             [{"kolon": "ad", "tablo": "Musteri", "sema": "core", "veri_tipi": "varchar"}],
             use_judge=True, mode="name_only",
         )
-        assert len(chat_calls) == 1, "Yüksek güven+2 kategori var, hakem tetiklenmemeliydi"
+        assert len(chat_calls) == 1, "Keskin olasılık (marj=0.90), hakem tetiklenmemeli"
+
+    @pytest.mark.asyncio
+    async def test_tight_margin_triggers_hakem_even_with_high_conf(self, monkeypatch):
+        # Model 95% güvenle birini seçti ama olasılık dağılımı yayvan (marj=0.10 < 0.25):
+        # iki kategori arasında gerçekten kararsız. Hakem tetiklenmeli.
+        chat_calls: list[str] = []
+
+        async def fake_chat(system, user, temperature=None):
+            chat_calls.append(system)
+            import json
+            if len(chat_calls) == 1:
+                return json.dumps([{
+                    "kolon": "hesapNo", "acilim": "Hesap No",
+                    "olasi_kategoriler": [
+                        {"id": 5, "olasilik": 0.50},
+                        {"id": 1, "olasilik": 0.40},
+                        {"id": 3, "olasilik": 0.10},
+                    ],
+                    "ana_kategori": 5,
+                    "teknik": False, "guven": 0.95, "gerekce": "emin gibi ama değil",
+                }])
+            return json.dumps({
+                "acilim": "Hesap No",
+                "olasi_kategoriler": [{"id": 5, "olasilik": 0.95}, {"id": 1, "olasilik": 0.05}],
+                "ana_kategori": 5, "teknik": False, "guven": 0.95, "gerekce": "müşteri sırrı",
+            })
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+        results = await classify_rows(
+            [{"kolon": "hesapNo", "tablo": "Musteri", "sema": "core", "veri_tipi": "varchar"}],
+            use_judge=True, mode="name_only",
+        )
+        assert len(chat_calls) == 2, "Marj=0.10 (< JUDGE_MARGIN_THRESHOLD=0.25); hakem tetiklenmeli"
+        assert results[0]["kaynak"] == "llm+hakem"
 
     @pytest.mark.asyncio
     async def test_technical_column_never_triggers_hakem(self, monkeypatch):
