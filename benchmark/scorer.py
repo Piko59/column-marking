@@ -160,7 +160,12 @@ async def run_benchmark(
 
     async def run_mode(mode: str) -> tuple[str, list[dict]]:
         nonlocal completed
-        results = await classify_rows(rows, use_judge=use_judge, mode=mode)
+        # use_examples=False: curated örnek bankası golden veri setiyle kavramsal olarak
+        # örtüştüğünden, few-shot açık bırakılsa benchmark modelin ham yeteneğini değil
+        # örnek sızıntısını ölçerdi (bkz. classify_rows docstring).
+        results = await classify_rows(
+            rows, use_judge=use_judge, mode=mode, use_examples=False
+        )
         if progress_cb:
             async with progress_lock:
                 completed += 1

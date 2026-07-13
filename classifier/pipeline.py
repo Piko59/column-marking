@@ -4,7 +4,8 @@ Akış (LangGraph benzeri, sade Python):
   1. Kural katmanı: önek çözümü + sözlük ipuçları — LLM'e yalnızca İPUCU olarak gider,
      asıl açılım çıkarımını LLM kendisi yapar (çıktıdaki "acilim" alanı)
   2. Aşama 1 — Toplu sınıflandırma: tablo bazlı gruplar, tek prompt'ta 7 kategori, çok etiketli
-  3. Aşama 2 — Hakem: güveni JUDGE_THRESHOLD altındaki kolonlar tek tek yeniden değerlendirilir
+  3. Aşama 2 — Hakem: güveni JUDGE_THRESHOLD altında VEYA marjı JUDGE_MARGIN_THRESHOLD
+     altında olan kolonlar tek tek yeniden değerlendirilir
   (Önbellek varsayılan olarak KAPALI — her sorgu yeniden değerlendirilir; USE_CACHE=1 ile açılır)
 """
 
@@ -16,7 +17,7 @@ import threading
 
 import config
 
-from . import decisions, llm, prompts, rules
+from . import decisions, examples, llm, prompts, rules
 from .categories import CATEGORIES, CATEGORY_PRIORITY
 
 # classify_rows(mode=...) — bkz. fonksiyon docstring'i.
@@ -141,25 +142,23 @@ def _sanitize(result: dict, column_name: str, source: str) -> dict:
     if acilim in (None, "null", "None"):
         acilim = ""
 
-    # Marj: olasılık sıralı iken ilk iki kategori arasındaki fark.
-    # Yüksek (>0.30) → model net bir kazanan görüyor.
-    # Düşük (<JUDGE_MARGIN_THRESHOLD) → model gerçekten kararsız, hakem tetiklenir.
-    # Eski format (has_probs=False) için marj=0 — olasılık bilgisi yok.
+    # İKİ BAĞIMSIZ SİNYAL (olasılık dağılımından türetilir; modelin "guven" alanı yok sayılır):
+    #  • guven = EN YÜKSEK sınıf olasılığı — "kazanan kategoriye ne kadar eminiz?"
+    #    (0.80/0.20 dağılımında guven=0.80). Mutlak eminlik.
+    #  • marj  = ilk iki olasılığın farkı — "#1, #2'yi ne kadar net yeniyor?"
+    #    Yayvan dağılımı (gerçek belirsizliği) yakalar (0.50/0.40 → marj=0.10).
+    # Hakem, ikisinden biri düşükse tetiklenir (bkz. process_superbatch): güven yüksek
+    # ama iki kategori boğazlaşıyorsa (marj düşük) da, ya da tek kategoriye eminlik
+    # düşükse (guven < eşik) de ikinci görüş alınır.
+    # Eski format (has_probs=False) → olasılık bilgisi yok: guven=0, marj=0 (hakeme gider).
     probs_sorted = [olas[c] for c in cats]
-    if not has_probs:
-        marj = 0.0
+    if not has_probs or not probs_sorted:
+        guven = marj = 0.0
     elif len(probs_sorted) >= 2:
+        guven = round(probs_sorted[0], 3)
         marj = round(probs_sorted[0] - probs_sorted[1], 3)
-    elif len(probs_sorted) == 1:
-        marj = round(probs_sorted[0], 3)  # tek kategori: tam emin
-    else:
-        marj = 0.0
-
-    # Güven = Marj. Modelin "guven" alanı artık yok sayılıyor — olasılık dağılımından
-    # türetiliyor. Bu, UI'da tutarsız sayı göstermeyi önler ve hakem kabul/red kararını
-    # sağlam bir metrik (marj) üzerine oturtur.
-    # Eski format (has_probs=False) için guven=0.0 — olasılık bilgisi yok.
-    guven = marj
+    else:  # tek kategori: hem eminlik hem marj o tek olasılıktır
+        guven = marj = round(probs_sorted[0], 3)
 
     return {
         "kolon": column_name,
@@ -307,10 +306,10 @@ def _pack_into_superbatches(
 async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
     """Aşama 2: olasılık dağılımı belirsiz kolon için hakem geçişi.
 
-    Hakemin dağılımından türetilen marj, ilk denemenin marjından düşükse İLK sonucu
-    koruruz — aksi hâlde hakem "belki yanlış olanı belki daha yanlış olanla değiştir"
-    haline gelir. Kabul edilen hakem sonucu "llm+hakem", reddedilen "llm+hakem_ret"
-    olarak işaretlenir (izlenebilirlik için ayırt edilir).
+    Hakemin güveni (en yüksek sınıf olasılığı) ilk denemenin güveninden düşükse İLK
+    sonucu koruruz — aksi hâlde hakem "belki yanlış olanı belki daha yanlış olanla
+    değiştir" haline gelir. Kabul edilen hakem sonucu "llm+hakem", reddedilen
+    "llm+hakem_ret" olarak işaretlenir (izlenebilirlik için ayırt edilir).
     """
     try:
         # temperature verilmez: config.LLM_TEMPERATURE'a düşer (varsayılan 0 —
@@ -323,20 +322,21 @@ async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
         if isinstance(parsed, list):
             parsed = parsed[-1] if parsed else {}
         candidate = _sanitize(parsed, col["kolon"], "llm+hakem")
-        # Hakem, ilk denemeden daha az net (marj düşmüş) — ilk sonucu koru.
-        # (marj == guven — olasılık dağılımından türetiliyor)
-        if candidate["marj"] < first_pass["marj"]:
+        # Hakem, ilk denemeden daha az emin (kazanan sınıf güveni düşmüş) — ilk sonucu koru.
+        if candidate["guven"] < first_pass["guven"]:
             kept = dict(first_pass)
             kept["kaynak"] = "llm+hakem_ret"
             kept["hakem_denemesi"] = {
                 "kategoriler": candidate["kategoriler"],
                 "ana_kategori": candidate["ana_kategori"],
+                "guven": candidate["guven"],
                 "marj": candidate["marj"],
                 "olasiliklar": candidate["olasiliklar"],
             }
             return kept
         candidate["ilk_deneme"] = {
             "kategoriler": first_pass["kategoriler"],
+            "guven": first_pass["guven"],
             "marj": first_pass["marj"],
             "olasiliklar": first_pass.get("olasiliklar") or {},
         }
@@ -348,7 +348,8 @@ async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
 # --- Ana giriş noktası -------------------------------------------------------
 
 async def classify_rows(
-    rows: list[dict], use_judge: bool = True, mode: str = "name_content"
+    rows: list[dict], use_judge: bool = True, mode: str = "name_content",
+    use_examples: bool = True,
 ) -> list[dict]:
     """Satır listesini sınıflandırır; giriş sırasıyla aynı sırada sonuç döndürür.
 
@@ -359,6 +360,12 @@ async def classify_rows(
                             yalnız örnek değerler + tip/uzunluk/PK üzerinden sınıflandırma
                             zorlanır. Bu üç mod, "isimden mi anlıyoruz, içerikten mi, yoksa
                             ikisi birden mi" sorusunu ölçmek için var (bkz. benchmark).
+    use_examples: dinamik few-shot (curated referans + insan onaylı örnekler) prompt'a
+          eklensin mi. Üretimde True. BENCHMARK False geçmeli: curated örnek bankası golden
+          veri setiyle KAVRAM olarak örtüşür (örn. curated "ibanNo→5" ≈ golden IBAN'ın
+          cevabı); açık bırakılırsa benchmark modelin ham yeteneğini değil, örnek
+          sızıntısını ölçer. Few-shot yalnız name_content modunda etkilidir (benchmark'ın
+          name_only/content_only modları sinyal izole eder).
     """
     if mode not in VALID_MODES:
         raise ValueError(f"Geçersiz mode: {mode!r}; beklenen: {VALID_MODES}")
@@ -410,27 +417,32 @@ async def classify_rows(
     superbatches = _pack_into_superbatches(pending, config.BATCH_SIZE)
 
     async def process_superbatch(sb: list[tuple[tuple[str, str], list[tuple[int, dict]]]]):
-        # Few-shot: bu çağrıdaki kolonlara en benzer insan-onaylı kararlar (≤ FEWSHOT_K).
-        # Yalnız üretim modunda — benchmark modları insan bilgisiyle kirlenmemeli.
+        # Few-shot: bu çağrıdaki kolonlara en benzer örnekler (curated referans banka +
+        # insan onaylı kararlar, ≤ FEWSHOT_K). Yalnız üretim modunda (name_content) —
+        # benchmark modları modelin ham yeteneğini ölçer, few-shot ile kirlenmemeli.
         all_chunk_cols = [c for _, items in sb for _, c in items]
-        examples = (
-            decisions.similar_decisions(all_chunk_cols) if mode == "name_content" else []
+        few_shot = (
+            examples.retrieve(all_chunk_cols)
+            if (mode == "name_content" and use_examples) else []
         )
         if len(sb) == 1:
             (schema, table), chunk = sb[0]
             cols = [c for _, c in chunk]
-            group_results = await _classify_group(schema, table, cols, examples=examples)
+            group_results = await _classify_group(schema, table, cols, examples=few_shot)
         else:
             table_groups = [(gk[0], gk[1], [c for _, c in chunk]) for gk, chunk in sb]
-            group_results = await _classify_multi_group(table_groups, examples=examples)
+            group_results = await _classify_multi_group(table_groups, examples=few_shot)
             chunk = [pair for _, items in sb for pair in items]
 
-        # 4: hakem geçişi — tek tetikleyici:
-        #   marj < JUDGE_MARGIN_THRESHOLD (en yüksek iki olasılık birbirine yakın;
-        #   model gerçekten kararsız). Güven artık marjdan türetiliyor (guven == marj),
-        #   bu yüzden ayrı bir "low_conf" sinyali gereksiz.
-        # Eski format (olasılık bilgisi yok, has_probs=False) sonuçları hakeme gitmez —
-        #   zaten marj=0 ve olasılık yoksa hakeme ne sorduğumuzu bilemeyiz.
+        # 4: hakem geçişi — İKİ BAĞIMSIZ TETİKLEYİCİ (biri yeterli):
+        #   • guven < JUDGE_THRESHOLD (kazanan kategoriye eminlik düşük), VEYA
+        #   • marj  < JUDGE_MARGIN_THRESHOLD (ilk iki olasılık yakın; gerçek belirsizlik).
+        # KRİTİK: Olasılık bilgisi YOKSA (has_probs=False — model bare id listesi döndürdü)
+        #   hakeme GİTMEZ. Gerekçe: hakem aynı modeldir; batch prompt'unda olasılık
+        #   üretemeyen model hakem prompt'unda da üretemez → çağrı boşa gider ve karşılaştırma
+        #   yapılamaz. Bu skip olmadan, olasılık formatını izlemeyen bir modele (örn. bazı
+        #   yerel gemma/gpt-oss dağıtımları) geçince HER kolon ikinci kez çağrılır — hız felaketi.
+        #   Bu kolonlar guven=0 ile işaretlenir (UI'da düşük güven → insan incelemesine düşer).
         # Model bilinçli olarak "teknik" işaretlediği kolonlar hakeme gitmez (hız için kritik).
         if use_judge:
             judge_tasks = []
@@ -438,9 +450,10 @@ async def classify_rows(
                 if res["kaynak"] != "llm" or res["teknik"]:
                     continue
                 if not res.get("olasilik_bilgisi_var"):
-                    continue  # eski format / önbellek — olasılık yok, hakem tetiklenmez
+                    continue  # olasılık sinyali yok → hakem katkı sağlamaz, boşa çağrı yapma
+                low_conf = res.get("guven", 1.0) < config.JUDGE_THRESHOLD
                 tight_margin = res.get("marj", 1.0) < config.JUDGE_MARGIN_THRESHOLD
-                if not tight_margin:
+                if not (low_conf or tight_margin):
                     continue
                 _, col = chunk[j]
                 judge_tasks.append((j, _judge(str(col.get("sema", "")), str(col.get("tablo", "")), col, res)))
@@ -456,6 +469,11 @@ async def classify_rows(
                     _cache[_cache_key(rows[idx])] = {
                         k: v for k, v in res.items() if k != "kaynak"
                     } | {"kaynak_orj": res["kaynak"]}
+            # Şeffaflık: bu kolona karar verirken prompta giren en yakın örnekler
+            # (curated referans + insan onaylı). Arayüzde gösterilir. Önbelleğe yazımdan
+            # SONRA eklenir — display verisi cache'i şişirmesin/bayatlatmasın.
+            if mode == "name_content" and use_examples and res["kaynak"] != "hata":
+                res["benzer_ornekler"] = examples.nearest_for_column(col)
 
     await asyncio.gather(*(process_superbatch(sb) for sb in superbatches))
     if config.USE_CACHE and mode == "name_content" and pending:

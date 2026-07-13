@@ -185,6 +185,15 @@ def similar_decisions(
     return [rec for _, rec in scored[:k]]
 
 
+def approved_records() -> list[dict]:
+    """Sınıflandırmayı etkileyen (onayla/duzelt) tüm kararların ham listesi.
+
+    examples.py bunu curated referans bankasıyla birleştirip tek bir few-shot retrieval
+    havuzu kurar — böylece insan onayı biriktikçe örnek havuzu otomatik zenginleşir."""
+    _load()
+    return [r for r in _decisions.values() if r["action"] in ("onayla", "duzelt")]
+
+
 def stats() -> dict:
     _load()
     counts = {a: 0 for a in VALID_ACTIONS}

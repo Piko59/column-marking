@@ -17,9 +17,12 @@ if not QWEN_API_KEY:
 # Pipeline ayarları
 USE_CACHE = os.getenv("USE_CACHE", "0") == "1"  # kapalı: her sorgu yeniden değerlendirilir
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "25"))          # tek LLM çağrısındaki maks. kolon sayısı
-JUDGE_THRESHOLD = float(os.getenv("JUDGE_THRESHOLD", "0.75"))  # bu güvenin altı (veya marj < JUDGE_MARGIN_THRESHOLD) hakem geçişine gider
-# Olasılık dağılımının marjı (en yüksek iki olasılık arasındaki fark) bu değerden
-# küçükse model gerçekten kararsız demektir — güven yüksek olsa bile hakem çağrılır.
+# Hakem tetikleyici 1: kazanan kategorinin olasılığı (guven) bu eşiğin altındaysa
+# model o kategoriye yeterince emin değil demektir → ikinci görüş (hakem) alınır.
+JUDGE_THRESHOLD = float(os.getenv("JUDGE_THRESHOLD", "0.75"))
+# Hakem tetikleyici 2: en yüksek iki olasılığın farkı (marj) bu değerden küçükse iki
+# kategori boğazlaşıyor (gerçek belirsizlik) — kazanan olasılık yüksek olsa bile hakem
+# çağrılır. İki tetikleyici bağımsızdır; biri yeterlidir (bkz. pipeline.process_superbatch).
 JUDGE_MARGIN_THRESHOLD = float(os.getenv("JUDGE_MARGIN_THRESHOLD", "0.25"))
 # Tekrarlanabilirlik: varsayılan 0 (deterministik) — denetimde "aynı girdiye aynı çıktı"
 # sorusu gelir; farklılık istenirse .env'den yükseltin. LLM_SEED, sağlayıcı destekliyorsa

@@ -96,26 +96,38 @@ def _render_column_line(i: int, c: dict) -> str:
     return " | ".join(parts)
 
 
-def render_decision_examples(examples: list[dict] | None) -> list[str]:
-    """İnsan onaylı benzer kararları few-shot bloğu olarak üretir (boşsa hiç üretmez).
+_EXAMPLE_LABELS = {
+    "referans": "referans örnek",
+    "onayla": "insan onayladı",
+    "duzelt": "insan düzeltti",
+}
 
-    Bilinçli olarak "yol gösterici, bağlayıcı değil" çerçevesinde verilir: insan
-    kararının güven=1.0 ağırlığı yalnız BİREBİR imza eşleşmesinde (karar sözlüğü,
-    pipeline'da LLM'den önce) uygulanır; benzer-ama-farklı kolonda model kendi
-    kararını verir. Örnek sayısı config.FEWSHOT_K ile sınırlı — prompt şişmez.
+
+def render_decision_examples(examples: list[dict] | None) -> list[str]:
+    """Benzer örnekleri (curated referans + insan onaylı kararlar) few-shot bloğu olarak
+    üretir (boşsa hiç üretmez).
+
+    Örnekler classifier.examples.retrieve ile o partideki kolonlara en benzer olacak
+    şekilde seçilir. Bilinçli olarak "yol gösterici, bağlayıcı değil" çerçevesinde verilir:
+    insan kararının güven=1.0 ağırlığı yalnız BİREBİR imza eşleşmesinde (karar sözlüğü,
+    pipeline'da LLM'den önce) uygulanır; benzer-ama-farklı kolonda model, örneği ve
+    gerekçesini görüp kendi kararını verir. Örnek sayısı config.FEWSHOT_K ile sınırlı —
+    prompt şişmez.
     """
     if not examples:
         return []
     lines = [
-        "İNSAN ONAYLI ÖNCEKİ KARARLAR (benzer kolon adları için yol gösterici — "
+        "REFERANS ÖRNEKLER (benzer kolonların doğru sınıflandırması — yol gösterici, "
         "bağlayıcı DEĞİL; kolonun tablosu/bağlamı farklıysa kendi kararını ver):",
     ]
     for ex in examples:
-        label = "onaylandı" if ex.get("action") == "onayla" else "insan düzeltti"
+        label = _EXAMPLE_LABELS.get(ex.get("kaynak") or ex.get("action"), "örnek")
         dtype = f" ({ex['veri_tipi']})" if ex.get("veri_tipi") else ""
+        teknik = " [teknik]" if ex.get("teknik") else ""
+        gerekce = f" — {ex['gerekce']}" if ex.get("gerekce") else ""
         lines.append(
             f"- {ex.get('kolon', '?')}{dtype}: olası kategoriler={ex.get('kategoriler')}, "
-            f"ana kategori={ex.get('ana_kategori')} [{label}]"
+            f"ana kategori={ex.get('ana_kategori')}{teknik} [{label}]{gerekce}"
         )
     lines.append("")
     return lines

@@ -126,6 +126,46 @@ function probsHtml(result) {
   return `<div class="prob-dist">${rows}</div>${marginTag}`;
 }
 
+// Dinamik few-shot şeffaflığı: bu kolona karar verilirken prompta giren en yakın
+// referans/insan-onaylı örnekler. "Model neye bakarak karar verdi" sorusunu görünür kılar.
+const NEAR_SRC_LABELS = { referans: "referans", onayla: "insan ✓", duzelt: "insan ✎" };
+
+function nearMainCat(ex) {
+  const ana = ex.ana_kategori;
+  return ana ? `<span class="badge c${ana}" title="${esc(ex.ana_kategori_adi || "")}">${ana}. ${esc(ex.ana_kategori_adi || state.categories[ana] || "")}</span>` : "";
+}
+
+// Tekil sorgu için tam blok
+function similarExamplesHtml(result) {
+  if (!result || result.kaynak === "hata") return "";
+  const ex = result.benzer_ornekler || [];
+  if (!ex.length) {
+    return '<span class="dim">Bu kolona yeterince benzer örnek bulunamadı (havuz büyüdükçe artacak).</span>';
+  }
+  return `<ul class="near-list">${ex.map((e) => `
+    <li>
+      <span class="near-head">
+        <span class="mono">${esc(e.kolon)}</span>${e.veri_tipi ? `<span class="dim"> (${esc(e.veri_tipi)})</span>` : ""}
+        <span class="near-sim" title="Ad benzerliği (token Jaccard)">%${Math.round((e.benzerlik || 0) * 100)}</span>
+        <span class="near-src">${NEAR_SRC_LABELS[e.kaynak] || e.kaynak || ""}</span>
+      </span>
+      <span class="near-cats">${nearMainCat(e)}${(e.kategoriler || []).filter((c) => c !== e.ana_kategori).map((c) =>
+        `<span class="badge sec c${c}">${c}</span>`).join("")}${e.teknik ? '<span class="badge tek">teknik</span>' : ""}</span>
+      ${e.gerekce ? `<span class="near-reason dim">${esc(e.gerekce)}</span>` : ""}
+    </li>`).join("")}</ul>`;
+}
+
+// Tablo gerekçe hücresi için kompakt satır
+function similarExamplesInline(result) {
+  if (!result || result.kaynak === "hata") return "";
+  const ex = result.benzer_ornekler || [];
+  if (!ex.length) return "";
+  const chips = ex.map((e) =>
+    `<span class="near-chip" title="${esc(e.kolon)} (${NEAR_SRC_LABELS[e.kaynak] || ""}, %${Math.round((e.benzerlik || 0) * 100)})${e.gerekce ? " — " + esc(e.gerekce) : ""}">${esc(e.kolon)}→${e.ana_kategori || "?"}</span>`
+  ).join("");
+  return `<div class="near-inline" title="Bu kolona en yakın referans örnekler (dinamik few-shot havuzundan)">≈ ${chips}</div>`;
+}
+
 // ============ İnsan inceleme (Onayla / Düzelt / Nötr) ============
 const REVIEW_LABELS = { onayla: "Onaylandı", duzelt: "Düzeltildi", notr: "Nötr" };
 
@@ -451,7 +491,7 @@ function renderTable() {
       <td class="dim">${r.pk === "1" ? "PK" : ""}</td>
       <td>${badgeHtml(res)}</td>
       <td>${confHtml(res)}</td>
-      <td class="reason">${esc(res ? res.gerekce : "")}</td>
+      <td class="reason">${esc(res ? res.gerekce : "")}${res ? similarExamplesInline(res) : ""}</td>
       <td>${reviewHtml(res, i)}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="11" class="dim" style="text-align:center;padding:24px">Eşleşen satır yok</td></tr>`;
@@ -498,9 +538,12 @@ $("singleForm").addEventListener("submit", async (e) => {
     const jsonOpts = (body) => ({
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
+    // Tekil sorguda hakem KAPALI: ilk cevap tek çağrıda hızlı döner. Emin kolonlar
+    // zaten hakem tetiklemezdi; belirsiz kolonlar düşük güven ile işaretlenir (güven
+    // sütununa bak). Toplu tabloda hakem, sağ üstteki anahtardan yönetilir.
     const [analysisResp, classifyResp] = await Promise.all([
       api("/api/analyze", jsonOpts(row)),
-      api("/api/classify", jsonOpts({ rows: [row], use_judge: true })),
+      api("/api/classify", jsonOpts({ rows: [row], use_judge: false })),
     ]);
     const analysis = await analysisResp.json();
     const result = (await classifyResp.json()).results[0];
@@ -534,6 +577,7 @@ function renderSingleResult(row, result, analysis) {
     <div class="result-block"><h3>Olasılık Dağılımı</h3>${probsHtml(result)}</div>
     <div class="result-block"><h3>Güven</h3>${confHtml(result) || "-"}</div>
     <div class="result-block"><h3>Gerekçe</h3><div class="result-reason">${esc(result.gerekce) || "-"}</div></div>
+    <div class="result-block"><h3>Çağrılan En Yakın Örnekler <span class="dim" style="font-weight:400">(dinamik few-shot)</span></h3>${similarExamplesHtml(result)}</div>
     ${analysis.note ? `<div class="result-block"><h3>Önek Çözümü</h3><div class="result-reason">${esc(analysis.note)}</div></div>` : ""}
     ${hints.length ? `<div class="result-block"><h3>Sözlük İpuçları</h3>
       <ul class="hint-list">${hints.map(([t, cats]) =>

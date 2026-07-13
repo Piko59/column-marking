@@ -138,13 +138,13 @@ class TestFewshotPrompt:
         ex = [{"kolon": "mhIbanNo", "veri_tipi": "varchar", "action": "onayla",
                "kategoriler": [1, 5], "ana_kategori": 5}]
         p = prompts.build_batch_prompt("dbo", "T", [{"kolon": "klaIbanNo"}], examples=ex)
-        assert "İNSAN ONAYLI ÖNCEKİ KARARLAR" in p
+        assert "REFERANS ÖRNEKLER" in p
         assert "mhIbanNo" in p and "bağlayıcı DEĞİL" in p
 
     def test_no_examples_no_block(self):
         from classifier import prompts
         p = prompts.build_batch_prompt("dbo", "T", [{"kolon": "klaIbanNo"}])
-        assert "İNSAN ONAYLI" not in p
+        assert "REFERANS ÖRNEKLER" not in p
 
     @pytest.mark.asyncio
     async def test_similar_decision_reaches_llm_prompt(self, monkeypatch):
@@ -169,7 +169,7 @@ class TestFewshotPrompt:
         results = await classify_rows([row], use_judge=False)
         assert results[0]["kaynak"] == "llm"  # birebir imza değil, LLM karar verdi
         assert "mhIbanNo" in seen["user"]     # ama insan kararı örnek olarak gösterildi
-        assert "İNSAN ONAYLI ÖNCEKİ KARARLAR" in seen["user"]
+        assert "REFERANS ÖRNEKLER" in seen["user"]
 
     @pytest.mark.asyncio
     async def test_benchmark_mode_gets_no_examples(self, monkeypatch):
@@ -189,7 +189,32 @@ class TestFewshotPrompt:
         monkeypatch.setattr(llm, "chat", fake_chat)
         row = {"sema": "s", "tablo": "T", "kolon": "klaIbanNo", "veri_tipi": "varchar"}
         await classify_rows([row], use_judge=False, mode="name_only")
-        assert "İNSAN ONAYLI" not in seen["user"]
+        assert "REFERANS ÖRNEKLER" not in seen["user"]
+
+    @pytest.mark.asyncio
+    async def test_use_examples_false_disables_fewshot_in_name_content(self, monkeypatch):
+        # Benchmark yolu: name_content olsa bile use_examples=False ise few-shot enjekte
+        # edilmez (curated banka golden ile örtüştüğünden sızıntıyı önler) ve display de
+        # eklenmez.
+        decisions.save_decision(
+            {"kolon": "mhIbanNo", "veri_tipi": "varchar"}, "onayla",
+            ana_kategori=5, kategoriler=[1, 5],
+        )
+        seen = {}
+
+        async def fake_chat(system, user, temperature=None):
+            seen["user"] = user
+            import json
+            return json.dumps([{"kolon": "klaIbanNo", "olasi_kategoriler": [5],
+                                "ana_kategori": 5, "teknik": False, "gerekce": "t"}])
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+        row = {"sema": "s", "tablo": "T", "kolon": "klaIbanNo", "veri_tipi": "varchar"}
+        results = await classify_rows(
+            [row], use_judge=False, mode="name_content", use_examples=False
+        )
+        assert "REFERANS ÖRNEKLER" not in seen["user"]
+        assert "benzer_ornekler" not in results[0]
 
 
 class TestPipelineIntegration:

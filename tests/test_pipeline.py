@@ -85,12 +85,29 @@ class TestSanitize:
         assert result["ana_kategori"] == 6
         assert 6 in result["kategoriler"]
 
-    def test_confidence_clamped_to_0_1(self):
-        assert _sanitize({"olasi_kategoriler": [1], "guven": 5}, "c", "llm")["guven"] == 1.0
-        assert _sanitize({"olasi_kategoriler": [1], "guven": -3}, "c", "llm")["guven"] == 0.0
+    def test_confidence_is_top_probability_not_model_field(self):
+        # Güven artık modelin "guven" alanından DEĞİL, en yüksek sınıf olasılığından türetilir.
+        # 0.80/0.20 dağılımında güven = 0.80 (marj 0.60 değil).
+        result = _sanitize(
+            {"olasi_kategoriler": [{"id": 5, "olasilik": 0.80}, {"id": 1, "olasilik": 0.20}],
+             "ana_kategori": 5, "guven": 0.99}, "c", "llm",
+        )
+        assert result["guven"] == 0.8
+        assert result["marj"] == 0.6
 
-    def test_confidence_non_numeric_defaults_to_zero(self):
-        assert _sanitize({"olasi_kategoriler": [1], "guven": "yüksek"}, "c", "llm")["guven"] == 0.0
+    def test_probability_clamped_to_0_1(self):
+        # Olasılıklar [0,1]'e kırpılır → türetilen güven de kırpılmış olur.
+        assert _sanitize(
+            {"olasi_kategoriler": [{"id": 1, "olasilik": 1.5}]}, "c", "llm")["guven"] == 1.0
+        assert _sanitize(
+            {"olasi_kategoriler": [{"id": 1, "olasilik": -3}]}, "c", "llm")["guven"] == 0.0
+
+    def test_legacy_format_has_zero_confidence(self):
+        # Eski format (yalnız id listesi) → olasılık bilgisi yok → güven=0, marj=0.
+        result = _sanitize({"olasi_kategoriler": [1], "guven": "yüksek"}, "c", "llm")
+        assert result["guven"] == 0.0
+        assert result["marj"] == 0.0
+        assert result["olasilik_bilgisi_var"] is False
 
     def test_acilim_null_variants_become_empty_string(self):
         for val in (None, "null", "None"):
@@ -155,24 +172,29 @@ class TestJudgeAcceptance:
 
     @pytest.mark.asyncio
     async def test_rejects_hakem_when_confidence_drops(self, monkeypatch):
-        # İlk denemede güven 0.72, hakem 0.55 dönüyor — ilk sonuç korunur, kaynak "llm+hakem_ret".
+        # İlk denemede güven (en yüksek olasılık) 0.72, hakem 0.55 dönüyor —
+        # ilk sonuç korunur, kaynak "llm+hakem_ret".
         async def fake_chat(system, user, temperature=None):
             import json
             return json.dumps({
-                "acilim": None, "olasi_kategoriler": [4], "ana_kategori": 4,
-                "teknik": False, "guven": 0.55, "gerekce": "hakem",
+                "acilim": None,
+                "olasi_kategoriler": [{"id": 4, "olasilik": 0.55}, {"id": 1, "olasilik": 0.45}],
+                "ana_kategori": 4, "teknik": False, "gerekce": "hakem",
             })
 
         monkeypatch.setattr(llm, "chat", fake_chat)
         first_pass = _sanitize(
-            {"olasi_kategoriler": [1, 5], "ana_kategori": 5, "guven": 0.72, "gerekce": "ilk"},
+            {"olasi_kategoriler": [{"id": 5, "olasilik": 0.72}, {"id": 1, "olasilik": 0.28}],
+             "ana_kategori": 5, "gerekce": "ilk"},
             "col", "llm",
         )
+        assert first_pass["guven"] == 0.72
         result = await _judge("s", "t", {"kolon": "col"}, first_pass)
         assert result["kaynak"] == "llm+hakem_ret"
         assert result["ana_kategori"] == 5  # ilk sonuç korundu, hakemin 4'ü değil
         assert result["guven"] == 0.72
         assert result["hakem_denemesi"]["ana_kategori"] == 4
+        assert result["hakem_denemesi"]["guven"] == 0.55
 
     @pytest.mark.asyncio
     async def test_accepts_hakem_when_confidence_rises(self, monkeypatch):
@@ -180,20 +202,23 @@ class TestJudgeAcceptance:
         async def fake_chat(system, user, temperature=None):
             import json
             return json.dumps({
-                "acilim": None, "olasi_kategoriler": [3], "ana_kategori": 3,
-                "teknik": False, "guven": 0.85, "gerekce": "hakem",
+                "acilim": None,
+                "olasi_kategoriler": [{"id": 3, "olasilik": 0.85}, {"id": 5, "olasilik": 0.15}],
+                "ana_kategori": 3, "teknik": False, "gerekce": "hakem",
             })
 
         monkeypatch.setattr(llm, "chat", fake_chat)
         first_pass = _sanitize(
-            {"olasi_kategoriler": [4], "ana_kategori": 4, "guven": 0.55, "gerekce": "ilk"},
+            {"olasi_kategoriler": [{"id": 4, "olasilik": 0.55}, {"id": 6, "olasilik": 0.45}],
+             "ana_kategori": 4, "gerekce": "ilk"},
             "col", "llm",
         )
+        assert first_pass["guven"] == 0.55
         result = await _judge("s", "t", {"kolon": "col"}, first_pass)
         assert result["kaynak"] == "llm+hakem"
         assert result["ana_kategori"] == 3
         assert result["guven"] == 0.85
-        assert result["ilk_deneme"]["kategoriler"] == [4]
+        assert result["ilk_deneme"]["kategoriler"] == [4, 6]
         assert result["ilk_deneme"]["guven"] == 0.55
 
 
@@ -201,33 +226,30 @@ class TestJudgeTrigger:
     """Hakem tetikleyicisi: düşük güven VEYA olasılık marjı < eşik (gerçek belirsizlik)."""
 
     @pytest.mark.asyncio
-    async def test_mid_conf_legacy_format_triggers_hakem(self, monkeypatch):
-        # Model eski formatta (yalnız id listesi) 3 kategori döndürüyor — olasılıklar
-        # yok, bu yüzden hepsi eşit olasılıklı sayılır, marj=0 → hakem tetiklenmeli.
+    async def test_legacy_format_does_not_trigger_hakem(self, monkeypatch):
+        # Model eski formatta (yalnız id listesi) döndürdü — olasılık bilgisi YOK.
+        # Hakem (aynı model) olasılık üretemeyeceği için ikinci çağrı boşa gider;
+        # bu yüzden hakeme GİTMEZ (yerel modele geçişte "her kolon 2× çağrı" felaketini
+        # önler). Kolon guven=0 ile işaretlenir, insan incelemesine düşer.
         chat_calls: list[str] = []
 
         async def fake_chat(system, user, temperature=None):
             chat_calls.append(system)
             import json
-            # İlk çağrı asıl sınıflandırma, ikinci çağrı hakem
-            if len(chat_calls) == 1:
-                return json.dumps([{
-                    "kolon": "iban", "acilim": "IBAN",
-                    "olasi_kategoriler": [1, 3, 5], "ana_kategori": 5,
-                    "teknik": False, "guven": 0.82, "gerekce": "belirsiz",
-                }])
-            return json.dumps({
-                "acilim": "IBAN", "olasi_kategoriler": [5], "ana_kategori": 5,
-                "teknik": False, "guven": 0.95, "gerekce": "müşteri sırrı",
-            })
+            return json.dumps([{
+                "kolon": "iban", "acilim": "IBAN",
+                "olasi_kategoriler": [1, 3, 5], "ana_kategori": 5,
+                "teknik": False, "gerekce": "belirsiz",
+            }])
 
         monkeypatch.setattr(llm, "chat", fake_chat)
         results = await classify_rows(
             [{"kolon": "iban", "tablo": "MusteriHesap", "sema": "core", "veri_tipi": "varchar"}],
             use_judge=True, mode="name_only",
         )
-        assert len(chat_calls) == 2, "Legacy format (olasılıksız) marj=0; hakem tetiklenmeliydi"
-        assert results[0]["kaynak"] == "llm+hakem"
+        assert len(chat_calls) == 1, "Legacy format (olasılıksız) hakeme gitmemeli — boşa çağrı"
+        assert results[0]["kaynak"] == "llm"
+        assert results[0]["guven"] == 0.0
 
     @pytest.mark.asyncio
     async def test_high_conf_three_categories_does_not_trigger(self, monkeypatch):
@@ -313,6 +335,39 @@ class TestJudgeTrigger:
             use_judge=True, mode="name_only",
         )
         assert len(chat_calls) == 2, "Marj=0.10 (< JUDGE_MARGIN_THRESHOLD=0.25); hakem tetiklenmeli"
+        assert results[0]["kaynak"] == "llm+hakem"
+
+    @pytest.mark.asyncio
+    async def test_low_conf_clear_winner_triggers_hakem(self, monkeypatch):
+        # Kazanan net (marj=0.40 ≥ 0.25) AMA kazanan olasılık 0.70 < JUDGE_THRESHOLD (0.75):
+        # model o kategoriye yeterince emin değil → güven tetikleyicisiyle hakeme gitmeli.
+        # (Marj-only mantıkta bu kolon sessizce kabul edilirdi — yeni iki-sinyal tasarımı yakalar.)
+        chat_calls: list[str] = []
+
+        async def fake_chat(system, user, temperature=None):
+            chat_calls.append(system)
+            import json
+            if len(chat_calls) == 1:
+                return json.dumps([{
+                    "kolon": "vergiNo", "acilim": "Vergi No",
+                    "olasi_kategoriler": [
+                        {"id": 1, "olasilik": 0.70},
+                        {"id": 5, "olasilik": 0.30},
+                    ],
+                    "ana_kategori": 1, "teknik": False, "gerekce": "kişisel mi müşteri mi",
+                }])
+            return json.dumps({
+                "acilim": "Vergi No",
+                "olasi_kategoriler": [{"id": 1, "olasilik": 0.85}, {"id": 5, "olasilik": 0.15}],
+                "ana_kategori": 1, "teknik": False, "gerekce": "gerçek kişi vergi no",
+            })
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+        results = await classify_rows(
+            [{"kolon": "vergiNo", "tablo": "Musteri", "sema": "core", "veri_tipi": "varchar"}],
+            use_judge=True, mode="name_only",
+        )
+        assert len(chat_calls) == 2, "Güven 0.70 < 0.75; marj yeterli olsa da hakem tetiklenmeli"
         assert results[0]["kaynak"] == "llm+hakem"
 
     @pytest.mark.asyncio
