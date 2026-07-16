@@ -120,8 +120,9 @@ function confHtml(result) {
   const v = result.guven;
   const cls = v < CONF_LOW ? "low" : v < CONF_HIGH ? "mid" : "high";
   const src = { "llm+hakem": "hakem", cache: "önbellek", sozluk: "sözlük", insan: "insan" }[result.kaynak] || "";
-  return `<span class="conf ${cls}">${v.toFixed(2)}</span>` +
-         (src ? `<span class="src-tag">${src}</span>` : "");
+  return `<span class="conf ${cls}" title="Güven: kazanan kategorinin olasılığı">
+      <i class="conf-bar"><b style="width:${Math.round(v * 100)}%"></b></i>${v.toFixed(2)}</span>` +
+    (src ? `<span class="src-tag">${src}</span>` : "");
 }
 
 // Olasılık dağılımı (tekil sorgu için): tüm 7 kategori, her birine atanan olasılık,
@@ -145,9 +146,11 @@ function probsHtml(result) {
     else if (p > 0) cls.push("dim");
     else cls.push("zero");
     const name = state.categories[id] || "";
-    return `<div class="prob-row ${cls.join(" ")}">
+    // Satırın tamamı, olasılıkla orantılı yoğunlukta kategori rengine boyanır
+    // (--pc: kategori rengi, --tint: olasılığa bağlı doluluk).
+    return `<div class="prob-row ${cls.join(" ")}" style="--pc:var(--cat${id}); --tint:${Math.round(p * 16)}%">
       <span class="badge c${id}">${id}. ${esc(name)}</span>
-      <span class="prob-track"><span class="prob-fill" style="width:${Math.max(pct, p > 0 ? 2 : 0)}%; background:var(--cat${id})"></span></span>
+      <span class="prob-track"><span class="prob-fill" style="width:${Math.max(pct, p > 0 ? 2 : 0)}%">${pct >= 15 ? pct + "%" : ""}</span></span>
       <span class="prob-val">${pct}%</span>
     </div>`;
   }).join("");
@@ -443,9 +446,9 @@ function updateStats() {
     `<span class="stat-chip">Sınıflandırılan: <b>${classified}</b> / ${state.rows.length}</span>`,
     ...Object.entries(state.categories)
       .filter(([id]) => counts[id])
-      .map(([id, name]) => `<span class="stat-chip" title="Ana kategori sayısı"><b>${counts[id]}</b> ${esc(name)}</span>`),
+      .map(([id, name]) => `<span class="stat-chip cat" style="--c:var(--cat${id})" title="Ana kategori sayısı"><b>${counts[id]}</b> ${esc(name)}</span>`),
     `<span class="stat-chip">Kategorisiz: <b>${none}</b></span>`,
-    `<span class="stat-chip">Düşük güven: <b>${lowConf}</b></span>`,
+    `<span class="stat-chip${lowConf ? " warn" : ""}">Düşük güven: <b>${lowConf}</b></span>`,
   ];
   if (reviewed) chips.push(
     `<span class="stat-chip">İncelenen: <b>${reviewed}</b> (✓${rev.onayla} ✎${rev.duzelt} —${rev.notr})</span>`);
@@ -485,7 +488,10 @@ function renderTable() {
 
   $("gridBody").innerHTML = pageIdxs.map((i) => {
     const r = state.rows[i], res = state.results[i];
-    return `<tr>
+    // Satırın sol kenarına ana kategorinin renk şeridi — tabloda kategori dağılımı
+    // kaydırmadan tek bakışta okunur.
+    const stripe = res && res.ana_kategori ? `--rc:var(--cat${res.ana_kategori})` : "";
+    return `<tr style="${stripe}">
       <td class="dim">${i + 1}</td>
       <td class="dim">${esc(r.sema)}</td>
       <td>${esc(r.tablo)}</td>
