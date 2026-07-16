@@ -97,7 +97,6 @@
               <tr>
                 <th>#</th><th>Şema</th><th>Tablo</th><th>Kolon</th><th>Açılım</th>
                 <th>Veri Tipi</th><th>PK</th><th>Kategoriler</th><th>Güven</th><th>Gerekçe</th>
-                <th title="Onayla: sonuç doğrulanır ve karar sözlüğüne yazılır. Düzelt: kategorileri siz belirlersiniz. Nötr: yalnız 'incelendi' kaydı, hiçbir etkisi yoktur.">İnceleme</th>
               </tr>
             </thead>
             <tbody id="gridBody"></tbody>
@@ -268,23 +267,6 @@
   <footer class="footer">
     <span>Aşama 1: kural analizi + toplu LLM &nbsp;·&nbsp; Aşama 2: kararsız kolonlara hakem (güven &lt; 0.75 veya marj &lt; 0.25) &nbsp;·&nbsp; Her çalıştırmada yeniden değerlendirilir</span>
   </footer>
-
-  <!-- Düzeltme paneli (Düzelt düğmesiyle açılır) -->
-  <div id="reviewModal" class="modal-overlay hidden">
-    <div class="modal">
-      <h2>Sınıflandırmayı Düzelt — <span id="rvKolon" class="mono"></span></h2>
-      <p class="dim" style="margin-top:0">Doğru olası kategorileri işaretleyin ve ana kategoriyi seçin.
-        Karar, aynı kolon adı + veri tipi imzası için kalıcı olarak uygulanır.</p>
-      <div id="rvCats" class="rv-cats"></div>
-      <label class="rv-ana-label">Ana Kategori
-        <select id="rvAna" class="select"></select>
-      </label>
-      <div class="modal-actions">
-        <button id="rvCancel" class="btn btn-ghost">Vazgeç</button>
-        <button id="rvSave" class="btn btn-primary">Kaydet</button>
-      </div>
-    </div>
-  </div>
 
   <script src="app.js"></script>
 </body>

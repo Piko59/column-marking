@@ -162,12 +162,7 @@ async def run_benchmark(
 
     async def run_mode(mode: str) -> tuple[str, list[dict]]:
         nonlocal completed
-        # use_decisions=False: karar sözlüğü golden veri setiyle örtüşebilir; açık
-        # bırakılsa benchmark modelin ham yeteneğini değil, insanın önceden verdiği
-        # cevapların sızıntısını ölçerdi (bkz. classify_rows docstring).
-        results = await classify_rows(
-            rows, use_judge=use_judge, mode=mode, use_decisions=False
-        )
+        results = await classify_rows(rows, use_judge=use_judge, mode=mode)
         if progress_cb:
             async with progress_lock:
                 completed += 1

@@ -73,8 +73,8 @@ Excel → Ön işleme        rules.py   olası önek/sözlük İPUÇLARI üretir
 ```
 
 Her kolona olası kategoriler listesi ve **tek bir ana kategori** atanır; teknik/işlemsel
-kolonlar en yakın kategoriye bağlanıp `teknik=1` işaretlenir. Önbellek varsayılan olarak
-**kapalıdır** — her sorgu yeniden değerlendirilir (`USE_CACHE=1` ile açılabilir).
+kolonlar en yakın kategoriye bağlanıp `teknik=1` işaretlenir. Sonuçlar hiçbir yerde
+önbelleğe alınmaz — her sorgu her çalıştırmada yeniden değerlendirilir.
 Hakem geçişi arayüzden kapatılabilir. Eşikler `config.py` içinde
 (`BATCH_SIZE`, `JUDGE_THRESHOLD`, hız için `REASONING_EFFORT=low`).
 
@@ -158,10 +158,9 @@ config.py                model, anahtar ve pipeline ayarları
 classifier/
   categories.py          7 kategori + tanımları + öncelik sırası (tek doğruluk kaynağı)
   rules.py               önek çözümü, tokenizasyon, anahtar kelime sözlüğü
-  prompts.py             toplu sınıflandırma + hakem prompt'ları + prompt versiyon hash'i
-  decisions.py           insan inceleme kararları sözlüğü (onayla/düzelt/nötr)
+  prompts.py             toplu sınıflandırma + hakem prompt'ları
   llm.py                 OpenAI-uyumlu istemci (retry + güvenli JSON ayıklama)
-  pipeline.py            orkestrasyon: kural → sözlük → önbellek → toplu LLM → hakem (3 mod)
+  pipeline.py            orkestrasyon: kural → toplu LLM → hakem (3 mod)
 benchmark/
   dataset.py             golden veri seti: 56 kavram × 2 isim grubu = 112 satır
   scorer.py              3 mod × dataset koşusu + çok boyutlu metrikler
@@ -169,40 +168,12 @@ benchmark/
   store.py               koşu geçmişi kalıcılığı (benchmark_runs/, JSON dosya)
 tests/                   pytest birim testleri (kural/pipeline/llm/main saf fonksiyonları)
 static/                  arayüz (index.html, style.css, app.js) — Excel / Tekil Sorgu / Benchmark
-classification_cache.json  otomatik oluşan sonuç önbelleği (model+prompt versiyonuna bağlı)
 benchmark_runs/          otomatik oluşan benchmark koşu geçmişi (.gitignore'da)
 ```
 
-## İnsan İnceleme (Onayla / Düzelt / Nötr)
-
-Sonuç tablosundaki her satırda üç inceleme düğmesi vardır:
-
-- **✓ Onayla** — LLM sonucunu doğrular; karar kalıcı **karar sözlüğüne**
-  (`review_decisions.json`) yazılır. Aynı kolon imzası (kolon adı + veri tipi —
-  bilinçli olarak tablo değil, çünkü aynı kolon adı yüzlerce tabloda tekrarlanır)
-  bir daha geldiğinde LLM'e hiç gitmeden sözlükten döner (kaynak = `sozluk`,
-  güven = 1.0).
-- **✎ Düzelt** — açılan panelde olası kategorileri ve ana kategoriyi siz
-  belirlersiniz; düzeltilmiş hâli sözlüğe yazılır ve satıra uygulanır
-  (kaynak = `insan`). LLM'in orijinal kararı denetim izi olarak kayıtta saklanır.
-- **— Nötr** — yalnızca "incelendi" kaydı düşer; sınıflandırmaya, sözlük aramasına
-  ve dışa aktarılan kategorilere **hiçbir etkisi yoktur**. Alan uzmanı olmayan bir
-  gözden geçirenin sonucu etkilemeden ilerlemesi içindir.
-
-Not: Karar sözlüğü yalnız **birebir** (kolon adı + veri tipi) imza eşleşmesinde devreye
-girer; benzer-ama-farklı adlı kolonlara genelleme yapılmaz — o kolonlar LLM'e gider.
-(Benzer kararların LLM'e few-shot örneği olarak gösterilmesi denendi, offline ölçümde
-sözcüksel benzerliğin ~%19 oranında kategori açısından yanıltıcı örnek getirdiği
-görülünce kaldırıldı; ileride anlamsal embedding ile yeniden değerlendirilebilir.)
-
-Benchmark, `use_decisions=False` ile koşar: karar sözlüğü ve önbellek ölçüme
-karışmaz — aksi hâlde benchmark modelin yeteneğini değil, insanın önceden verdiği
-cevapların sızıntısını ölçerdi.
-
-İnceleme durumu Excel çıktısına "İnceleme" sütunu olarak yazılır
-(Onaylandı / Düzeltildi / Nötr). Karar sözlüğü `.gitignore`'dadır ve
-`DECISIONS_FILE` ile taşınabilir. Sözlük yalnız üretim modunda (`name_content`)
-devreye girer; benchmark modları ölçümü kirletmemek için sözlüğü yok sayar.
+Not: Sonuç önbelleği ve insan inceleme (Onayla/Düzelt/Nötr) katmanları bilinçli
+olarak kaldırılmıştır — hiçbir sorgu sonucu diske yazılmaz, her çalıştırma tüm
+kolonları LLM ile yeniden değerlendirir.
 
 ## Güvenlik Notları
 

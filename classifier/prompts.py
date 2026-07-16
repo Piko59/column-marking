@@ -1,6 +1,5 @@
 """LLM prompt şablonları."""
 
-import hashlib
 import json
 
 from .categories import CATEGORY_DEFINITIONS
@@ -208,11 +207,3 @@ def build_judge_prompt(schema: str, table: str, col: dict, first_pass: dict) -> 
         f"guven={first_pass.get('guven')}, gerekce={first_pass.get('gerekce')!r}\n\n"
         "Nihai kararını ver."
     )
-
-
-# SYSTEM_PROMPT veya JUDGE_SYSTEM_PROMPT metni değiştiğinde bu hash otomatik değişir.
-# pipeline._cache_key bunu model adıyla birlikte önbellek anahtarına ekler; aksi hâlde
-# prompt güncellendiğinde eski (artık geçersiz) LLM kararları sessizce önbellekte kalırdı.
-PROMPT_VERSION = hashlib.sha256(
-    (SYSTEM_PROMPT + JUDGE_SYSTEM_PROMPT).encode("utf-8")
-).hexdigest()[:12]

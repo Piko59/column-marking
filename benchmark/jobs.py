@@ -1,7 +1,7 @@
 """Benchmark koşularını arka planda çalıştıran, bellek-içi iş (job) takibi.
 
 Tek süreçli/tek worker'lı bir uvicorn dağıtımı varsayılır — proje zaten dosya tabanlı,
-tek-worker bir mimariye sahip (classification_cache.json ile aynı varsayım). Bir koşu
+tek-worker bir mimariye sahip (benchmark_runs/ deposu ile aynı varsayım). Bir koşu
 112 satır × birden çok mod içerdiği için (çok sayıda LLM çağrısı) dakikalar sürebilir;
 bu yüzden istek-yanıt döngüsünü bloklamadan arka planda çalıştırıp ilerlemeyi
 UI'ın periyodik olarak sorgulayabileceği bir sözlükte tutuyoruz.

@@ -19,7 +19,6 @@ import config
 from benchmark import dataset as bench_dataset
 from benchmark import jobs as bench_jobs
 from benchmark import store as bench_store
-from classifier import decisions
 from classifier.categories import CATEGORIES
 from classifier.pipeline import classify_rows
 from classifier.rules import analyze_column
@@ -181,14 +180,6 @@ class ExportRequest(BaseModel):
     items: list[ExportRow]
 
 
-class ReviewRequest(BaseModel):
-    row: RowIn
-    action: str  # "onayla" | "duzelt" | "notr"
-    ana_kategori: int | None = None
-    kategoriler: list[int] = Field(default_factory=list)
-    orijinal: dict | None = None  # denetim izi: LLM'in düzeltme öncesi sonucu
-
-
 # --- Uçlar ----------------------------------------------------------------------
 
 @app.get("/api/categories")
@@ -311,24 +302,6 @@ async def classify(req: ClassifyRequest):
     return {"results": results}
 
 
-@app.post("/api/review")
-def review(req: ReviewRequest):
-    """Bir kolonun sınıflandırmasına insan kararı işler.
-
-    onayla/duzelt → karar sözlüğüne yazılır; aynı (kolon adı, veri tipi) imzası bir
-    daha LLM'e gitmez. notr → yalnız "incelendi" kaydı; sınıflandırmaya etkisi yoktur.
-    """
-    try:
-        record = decisions.save_decision(
-            req.row.model_dump(), req.action,
-            ana_kategori=req.ana_kategori, kategoriler=req.kategoriler,
-            orijinal=req.orijinal,
-        )
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    return {"record": record, "stats": decisions.stats()}
-
-
 @app.post("/api/analyze")
 def analyze(row: RowIn):
     """LLM'siz hızlı analiz: önek çözümü + sözlük ipuçları (tekil sorgu ekranı için)."""
@@ -355,8 +328,7 @@ def export_excel(req: ExportRequest):
     cat_headers = [f"{i}. {name}" for i, name in CATEGORIES.items()]
     ws.append(base_headers + cat_headers
               + ["Ana Kategori", "Olası Kategoriler", "Teknik Kolon",
-                 "Tahmini Açılım", "Güven", "Gerekçe", "Kaynak", "İnceleme"])
-    inceleme_map = {"onayla": "Onaylandı", "duzelt": "Düzeltildi", "notr": "Nötr"}
+                 "Tahmini Açılım", "Güven", "Gerekçe", "Kaynak"])
 
     for item in req.items:
         r, res = item.row, item.result or {}
@@ -374,8 +346,7 @@ def export_excel(req: ExportRequest):
                ", ".join(res.get("kategori_adlari") or []),
                1 if res.get("teknik") else 0,
                acilim,
-               res.get("guven", ""), res.get("gerekce", ""), res.get("kaynak", ""),
-               inceleme_map.get(res.get("inceleme"), "")]
+               res.get("guven", ""), res.get("gerekce", ""), res.get("kaynak", "")]
         )
 
     buf = io.BytesIO()

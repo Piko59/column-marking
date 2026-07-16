@@ -4,7 +4,6 @@ import config
 from classifier import llm, prompts
 from classifier.pipeline import (
     _anonymize,
-    _cache_key,
     _classify_multi_group,
     _error_result,
     _judge,
@@ -54,37 +53,6 @@ class TestReasoningEffortPassthrough:
             use_judge=True, mode="name_only",
         )
         assert efforts == [None, None]
-
-
-class TestCacheKey:
-    def test_composes_schema_table_column_type(self):
-        row = {"sema": "dbo", "tablo": "Customer", "kolon": "Ad", "veri_tipi": "varchar"}
-        assert _cache_key(row) == (
-            f"{config.LLM_MODEL}|{prompts.PROMPT_VERSION}|dbo|customer|ad|varchar"
-        )
-
-    def test_missing_fields_default_to_empty(self):
-        row = {"kolon": "Ad"}
-        assert _cache_key(row) == f"{config.LLM_MODEL}|{prompts.PROMPT_VERSION}|||ad|"
-
-    def test_case_and_whitespace_insensitive(self):
-        a = _cache_key({"sema": " DBO ", "tablo": "Customer", "kolon": "Ad", "veri_tipi": "varchar"})
-        b = _cache_key({"sema": "dbo", "tablo": "Customer", "kolon": "Ad", "veri_tipi": "varchar"})
-        assert a == b
-
-    def test_key_changes_when_model_changes(self, monkeypatch):
-        row = {"sema": "dbo", "tablo": "Customer", "kolon": "Ad", "veri_tipi": "varchar"}
-        before = _cache_key(row)
-        monkeypatch.setattr(config, "LLM_MODEL", "some-other-model")
-        after = _cache_key(row)
-        assert before != after
-
-    def test_key_changes_when_prompt_changes(self, monkeypatch):
-        row = {"sema": "dbo", "tablo": "Customer", "kolon": "Ad", "veri_tipi": "varchar"}
-        before = _cache_key(row)
-        monkeypatch.setattr(prompts, "PROMPT_VERSION", "deadbeef0000")
-        after = _cache_key(row)
-        assert before != after
 
 
 class TestErrorResult:

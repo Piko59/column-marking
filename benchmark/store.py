@@ -1,7 +1,6 @@
 """Benchmark koşu geçmişinin kalıcı kaydı.
 
-Proje zaten sonuç önbelleğini (classification_cache.json) düz bir JSON dosyasında
-tutuyor; aynı deseni izliyoruz — veritabanı bağımlılığı eklemeden basit ve denetlenebilir.
+Düz JSON dosyası deseni: veritabanı bağımlılığı eklemeden basit ve denetlenebilir.
 
 Düzen:
   benchmark_runs/index.json   — hafif özet listesi (liste ekranı hızlı yüklensin diye)

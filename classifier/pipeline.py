@@ -6,18 +6,15 @@ Akış (LangGraph benzeri, sade Python):
   2. Aşama 1 — Toplu sınıflandırma: tablo bazlı gruplar, tek prompt'ta 7 kategori, çok etiketli
   3. Aşama 2 — Hakem: güveni JUDGE_THRESHOLD altında VEYA marjı JUDGE_MARGIN_THRESHOLD
      altında olan kolonlar tek tek yeniden değerlendirilir
-  (Önbellek varsayılan olarak KAPALI — her sorgu yeniden değerlendirilir; USE_CACHE=1 ile açılır)
+  (Önbellek yok: her sorgu her çalıştırmada yeniden değerlendirilir.)
 """
 
 import asyncio
 import hashlib
-import json
-import os
-import threading
 
 import config
 
-from . import decisions, llm, prompts, rules
+from . import llm, prompts, rules
 from .categories import CATEGORIES, CATEGORY_PRIORITY
 
 # classify_rows(mode=...) — bkz. fonksiyon docstring'i.
@@ -32,43 +29,6 @@ def _anonymize(kind: str, value: str) -> str:
         return value
     digest = hashlib.sha256(f"{kind}:{value}".encode("utf-8")).hexdigest()[:8]
     return f"{kind}_{digest}"
-
-# --- Önbellek ----------------------------------------------------------------
-
-_cache: dict[str, dict] = {}
-_cache_lock = threading.Lock()
-_cache_loaded = False
-
-
-def _cache_key(row: dict) -> str:
-    # Model adı + prompt hash'i anahtarın parçası: biri değişince eski kararlar otomatik
-    # geçersizleşir (aksi hâlde önbellek sessizce bayat kalırdı).
-    base = "|".join(
-        str(row.get(k, "")).strip().lower()
-        for k in ("sema", "tablo", "kolon", "veri_tipi")
-    )
-    return f"{config.LLM_MODEL}|{prompts.PROMPT_VERSION}|{base}"
-
-
-def _load_cache() -> None:
-    global _cache_loaded
-    if _cache_loaded:
-        return
-    _cache_loaded = True
-    if os.path.exists(config.CACHE_FILE):
-        try:
-            with open(config.CACHE_FILE, encoding="utf-8") as f:
-                _cache.update(json.load(f))
-        except (json.JSONDecodeError, OSError):
-            pass
-
-
-def _save_cache() -> None:
-    with _cache_lock:
-        tmp = config.CACHE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(_cache, f, ensure_ascii=False)
-        os.replace(tmp, config.CACHE_FILE)
 
 
 # --- Sonuç doğrulama ---------------------------------------------------------
@@ -182,7 +142,7 @@ def _sanitize(result: dict, column_name: str, source: str) -> dict:
         "teknik": bool(result.get("teknik")),
         "guven": round(guven, 2),
         "gerekce": str(result.get("gerekce") or "")[:500],
-        "kaynak": source,  # "llm" | "llm+hakem" | "llm+hakem_ret" | "cache" | "hata"
+        "kaynak": source,  # "llm" | "llm+hakem" | "llm+hakem_ret" | "hata"
     }
 
 
@@ -362,9 +322,12 @@ async def _judge(
 
 async def classify_rows(
     rows: list[dict], use_judge: bool = True, mode: str = "name_content",
-    use_decisions: bool = True, reasoning_effort: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> list[dict]:
     """Satır listesini sınıflandırır; giriş sırasıyla aynı sırada sonuç döndürür.
+
+    Kalıcılık YOK: sonuç önbelleği ve insan karar sözlüğü bilinçli olarak kaldırıldı —
+    her satır her çalıştırmada LLM tarafından yeniden değerlendirilir.
 
     rows: [{sema, tablo, kolon, veri_tipi, uzunluk, nullable, pk, ornek_degerler?}, ...]
     mode: "name_content" (varsayılan/üretim) — isim + varsa ham örnek değerler.
@@ -373,41 +336,16 @@ async def classify_rows(
                             yalnız örnek değerler + tip/uzunluk/PK üzerinden sınıflandırma
                             zorlanır. Bu üç mod, "isimden mi anlıyoruz, içerikten mi, yoksa
                             ikisi birden mi" sorusunu ölçmek için var (bkz. benchmark).
-    use_decisions: İNSAN BİLGİSİ kullanılsın mı — iki mekanizmanın ortak kapısı:
-          (a) karar sözlüğü (decisions.lookup — birebir imza eşleşmesi),
-          (b) sonuç önbelleği (cache, üretim sonuçlarıyla karışmasın diye).
-          Üretimde True. BENCHMARK False geçmeli: karar sözlüğü golden veri setiyle
-          örtüşebilir; açık bırakılırsa benchmark modelin ham yeteneğini değil, insanın
-          önceden verdiği cevapların sızıntısını ölçer. İkisi de yalnız name_content
-          modunda zaten etkindir (name_only/content_only sinyal izole eder).
     reasoning_effort: bu koşudaki TÜM LLM çağrılarının (batch + hakem) düşünme bütçesi;
           None → config.REASONING_EFFORT. Tekil sorgu "high" ile çağırır (derin analiz).
     """
     if mode not in VALID_MODES:
         raise ValueError(f"Geçersiz mode: {mode!r}; beklenen: {VALID_MODES}")
-    # Önbellek + karar sözlüğü yalnız ÜRETİM yolunda (name_content VE use_decisions)
-    # kullanılır: benchmark modları kasıtlı olarak sinyali kısıtlar ve önceden bilinen
-    # cevapların (sözlük/önbellek) ölçüme sızmaması gerekir — her zaman taze koşarlar.
-    production_path = mode == "name_content" and use_decisions
-    if config.USE_CACHE and production_path:
-        _load_cache()
     results: list[dict | None] = [None] * len(rows)
 
-    # 1-2: karar sözlüğü + kural analizi + önbellek
+    # 1: kural analizi + tablo bazlı gruplama
     pending: dict[tuple[str, str], list[tuple[int, dict]]] = {}
     for idx, row in enumerate(rows):
-        if production_path:
-            # İnsan kararı (onayla/düzelt) her şeyden önce gelir: aynı kolon imzası
-            # bir daha LLM'e gitmez. Nötr kayıtlar lookup'tan hiç dönmez (etkisiz).
-            decided = decisions.lookup(row)
-            if decided:
-                results[idx] = decisions.as_result(decided, row.get("kolon", ""))
-                continue
-        if config.USE_CACHE and production_path:
-            cached = _cache.get(_cache_key(row))
-            if cached:
-                results[idx] = {**cached, "kaynak": "cache"}
-                continue
         kolon_name = row.get("kolon", "")
         tablo_name = row.get("tablo", "")
         sema_name = row.get("sema", "")
@@ -426,7 +364,7 @@ async def classify_rows(
         group_key = (str(sema_name), str(tablo_name))
         pending.setdefault(group_key, []).append((idx, col))
 
-    # 3: tablo bazlı toplu sınıflandırma. Küçük tabloları BATCH_SIZE sınırına kadar TEK
+    # 2: tablo bazlı toplu sınıflandırma. Küçük tabloları BATCH_SIZE sınırına kadar TEK
     # çağrıda birleştiriyoruz (süper-batch) — gecikme büyük ölçüde çağrı başına sabit bir
     # "düşünme" yükünden geliyor, kolon sayısından değil; çağrı sayısını azaltmak en büyük
     # kazanç. Gerçek eşzamanlılık sınırı artık burada değil, llm._get_semaphore()'da
@@ -444,7 +382,7 @@ async def classify_rows(
             group_results = await _classify_multi_group(table_groups, reasoning_effort)
             chunk = [pair for _, items in sb for pair in items]
 
-        # 4: hakem geçişi — İKİ BAĞIMSIZ TETİKLEYİCİ (biri yeterli):
+        # 3: hakem geçişi — İKİ BAĞIMSIZ TETİKLEYİCİ (biri yeterli):
         #   • guven < JUDGE_THRESHOLD (kazanan kategoriye eminlik düşük), VEYA
         #   • marj  < JUDGE_MARGIN_THRESHOLD (ilk iki olasılık yakın; gerçek belirsizlik).
         # KRİTİK: Olasılık bilgisi YOKSA (has_probs=False — model bare id listesi döndürdü)
@@ -477,14 +415,7 @@ async def classify_rows(
 
         for (idx, col), res in zip(chunk, group_results):
             results[idx] = res
-            if config.USE_CACHE and production_path and res["kaynak"] != "hata":
-                with _cache_lock:
-                    _cache[_cache_key(rows[idx])] = {
-                        k: v for k, v in res.items() if k != "kaynak"
-                    } | {"kaynak_orj": res["kaynak"]}
 
     await asyncio.gather(*(process_superbatch(sb) for sb in superbatches))
-    if config.USE_CACHE and production_path and pending:
-        _save_cache()
 
     return [r or _error_result(rows[i].get("kolon", "?"), "işlenemedi") for i, r in enumerate(results)]

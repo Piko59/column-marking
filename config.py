@@ -21,7 +21,6 @@ if not LLM_BASE_URL or not LLM_API_KEY:
     )
 
 # Pipeline ayarları
-USE_CACHE = os.getenv("USE_CACHE", "0") == "1"  # kapalı: her sorgu yeniden değerlendirilir
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "25"))          # tek LLM çağrısındaki maks. kolon sayısı
 # Hakem tetikleyici 1: kazanan kategorinin olasılığı (guven) bu eşiğin altındaysa
 # model o kategoriye yeterince emin değil demektir → ikinci görüş (hakem) alınır.
@@ -46,9 +45,6 @@ SINGLE_REASONING_EFFORT = os.getenv("SINGLE_REASONING_EFFORT", "high")
 # açıyordu. Yerel vLLM'de çağrılar çok daha kısa sürer; istenirse .env'den düşürün.
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "300"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
-CACHE_FILE = os.getenv("CACHE_FILE", "classification_cache.json")
-# İnsan inceleme kararlarının (onayla/düzelt/nötr) kalıcı sözlüğü.
-DECISIONS_FILE = os.getenv("DECISIONS_FILE", "review_decisions.json")
 # Yüklenebilecek maksimum Excel boyutu (MB) — bellek koruması.
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
 # Ham veri tablosu yüklemede örnekleme: kolon başına kaç örnek değer, kaç satır taranır.

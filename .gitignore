@@ -8,7 +8,6 @@ __pycache__/
 venv/
 
 # Uygulama çıktıları
-classification_cache.json
 benchmark_runs/
 .pytest_cache/
 
@@ -17,9 +16,6 @@ benchmark_runs/
 .idea/
 Thumbs.db
 .DS_Store
-
-# Insan inceleme kararlari (yerel, hassas olabilir)
-review_decisions.json
 
 # Claude Code yerel ayarları (kişisel makine yolları içerir)
 .claude/
