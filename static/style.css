@@ -295,6 +295,18 @@ input:focus, select:focus {
 .stat-chip.warn { border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 .stat-chip.warn b { color: var(--danger); }
 
+/* Canlı akış: koşu sırasında son sınıflandırılan kolon → kategori çipleri */
+.live-feed { display: flex; gap: 6px 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.live-item {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 99px;
+  padding: 3px 5px 3px 11px; font-size: 12px; box-shadow: var(--shadow-sm);
+  animation: live-in .25s ease;
+}
+.live-item .live-col { font-family: Consolas, "SF Mono", monospace; color: var(--text-dim); }
+.live-item .badge { margin: 0; }
+@keyframes live-in { from { opacity: 0; transform: translateY(-4px); } }
+
 /* ============ Filtreler + tablo ============ */
 .filters { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .search { flex: 1; min-width: 220px; }

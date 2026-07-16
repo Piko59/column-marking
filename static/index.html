@@ -42,7 +42,8 @@
           <label class="checkbox"><input type="radio" name="uploadKind" value="data">
             <span><b>Ham veri tablosu</b> — ilk satır kolon adları, altı gerçek veri; her sayfa ayrı tablo sayılır, örnek değerler otomatik toplanır</span></label>
         </div>
-        <p class="dropzone-hint">Envanter sütunları: Sunucu, Veri Tabanı, Şema, Tablo Ad, Kolon Ad, Veri Tipi, Null Flag, PK Flag, Örnek Değerler.
+        <p class="dropzone-hint">Envanter sütunları: Sunucu, Veri Tabanı, Şema, Tablo Ad, Kolon Ad, Sıra No, Veri Tipi, Uzunluk, Kuruş, Null Flag, PK Flag
+          + örnek veriler (<b>veri1…veri5</b> sütunları veya tek "Örnek Değerler" sütunu).
           Örnek değerler LLM'e <b>ham olarak</b> gönderilir (yerel/banka içi LLM).</p>
         <input type="file" id="fileInput" accept=".xlsx,.xlsm" hidden>
       </div>
@@ -68,6 +69,10 @@
           <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
           <span id="progressText" class="progress-text"></span>
         </div>
+
+        <!-- Canlı akış: sınıflandırma sürerken son atanan kolon → kategori çiftleri -->
+        <div id="liveFeed" class="live-feed hidden" aria-live="polite"
+             title="Son sınıflandırılan kolonlar"></div>
 
         <div id="statsBar" class="stats-bar hidden"></div>
 

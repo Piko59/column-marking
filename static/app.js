@@ -335,6 +335,7 @@ $("resetBtn").addEventListener("click", () => {
   dropzone.classList.remove("hidden");
   $("fileInput").value = "";
   $("progressWrap").classList.add("hidden");
+  $("liveFeed").classList.add("hidden");
   $("statsBar").classList.add("hidden");
 });
 
@@ -372,6 +373,8 @@ async function runClassification() {
   $("stopBtn").classList.remove("hidden");
   $("stopBtn").disabled = false;
   $("progressWrap").classList.remove("hidden");
+  $("liveFeed").innerHTML = "";
+  $("liveFeed").classList.remove("hidden");
   let done = 0, failed = 0;
   const total = pendingIdx.length;
   setProgress(0, total);
@@ -389,6 +392,7 @@ async function runClassification() {
           method: "POST", headers: { "Content-Type": "application/json" }, body,
         })).json();
         chunk.forEach((rowIdx, j) => { state.results[rowIdx] = data.results[j] || null; });
+        pushLiveFeed(chunk);
       } catch (err) {
         failed += chunk.length;
         chunk.forEach((rowIdx) => {
@@ -409,6 +413,7 @@ async function runClassification() {
   state.running = false;
   $("classifyBtn").classList.remove("hidden");
   $("stopBtn").classList.add("hidden");
+  $("liveFeed").classList.add("hidden");  // koşu bitti; sonuçlar artık tabloda
   $("exportBtn").disabled = false;
   toast(state.stopRequested
     ? `Durduruldu — ${done}/${total} satır işlendi.`
@@ -422,6 +427,29 @@ async function runClassification() {
 function setProgress(done, total) {
   $("progressFill").style.width = total ? (done / total) * 100 + "%" : "0%";
   $("progressText").textContent = `${done.toLocaleString("tr")} / ${total.toLocaleString("tr")} kolon`;
+}
+
+// Canlı akış: her parça sonuçlandıkça son kolon → kategori atamaları ilerleme
+// çubuğunun altına düşer — kullanıcı uzun koşuda boş bir çubuğa değil, ilk
+// saniyelerden itibaren gerçek sonuçlara bakar.
+const LIVE_FEED_MAX = 14;
+function pushLiveFeed(chunkIdxs) {
+  const feed = $("liveFeed");
+  const items = chunkIdxs
+    .filter((i) => state.results[i] && state.results[i].kaynak !== "hata")
+    .slice(-LIVE_FEED_MAX)
+    .map((i) => {
+      const res = state.results[i];
+      const ana = res.ana_kategori;
+      const cat = ana
+        ? `<span class="badge c${ana}">${ana}. ${esc(state.categories[ana] || "")}</span>`
+        : '<span class="badge none">kategorisiz</span>';
+      return `<span class="live-item"><span class="live-col">${esc(state.rows[i].kolon)}</span>${cat}</span>`;
+    })
+    .reverse();
+  if (!items.length) return;
+  feed.insertAdjacentHTML("afterbegin", items.join(""));
+  while (feed.children.length > LIVE_FEED_MAX) feed.removeChild(feed.lastChild);
 }
 
 // ============ İstatistikler ============

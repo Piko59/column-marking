@@ -70,6 +70,10 @@ HEADER_RULES: list[tuple[str, list[str]]] = [
 
 _SAMPLE_SPLIT_RE = re.compile(r"[;|\n]+|,\s")
 
+# "veri1", "veri2"… başlıkları (yeni envanter formatı): her biri o kolonun bir örnek
+# değerini taşır; hepsi ornek_degerler listesinde toplanır.
+_VERI_N_RE = re.compile(r"^veri\d+$")
+
 
 def _split_samples(raw: str) -> list[str]:
     """Envanterdeki 'Örnek Değerler' hücresini listeye çevirir.
@@ -84,8 +88,15 @@ def _split_samples(raw: str) -> list[str]:
 
 
 def _map_headers(headers: list) -> dict[int, str]:
-    """Sütun indeksi -> alan adı eşlemesi. Her alan ilk eşleşen sütuna bağlanır."""
+    """Sütun indeksi -> alan adı eşlemesi. Her alan ilk eşleşen sütuna bağlanır.
+
+    "veri1"…"veriN" başlıklı sütunların tamamı "veri_n" alanına eşlenir; upload
+    sırasında değerleri ornek_degerler listesinde birleştirilir.
+    """
     mapping: dict[int, str] = {}
+    for idx, h in enumerate(headers):
+        if _VERI_N_RE.match(_norm_header(h)):
+            mapping[idx] = "veri_n"
     assigned: set[str] = set()
     for field, needles in HEADER_RULES:
         for idx, h in enumerate(headers):
@@ -186,8 +197,10 @@ def get_categories():
 async def upload_excel(file: UploadFile = File(...)):
     """Envanter Excel'ini ayrıştırır ve normalize satır listesi döndürür (sınıflandırma yapmaz).
 
-    İsteğe bağlı "Örnek Değerler" sütunu tanınır: hücredeki değerler (; | satır sonu veya
-    ", " ile ayrılmış) ornek_degerler listesine çevrilir ve sınıflandırmada ham içerik
+    İki tür örnek-değer sütunu tanınır ve birleştirilir:
+    - "veri1"…"veriN" başlıklı sütunlar (her hücre bir örnek değer — yeni format),
+    - tek "Örnek Değerler" sütunu (değerler ; | satır sonu veya ", " ile ayrılmış).
+    Toplanan değerler ornek_degerler listesine yazılır ve sınıflandırmada ham içerik
     sinyali olarak kullanılır.
     """
     if not (file.filename or "").lower().endswith((".xlsx", ".xlsm")):
@@ -200,15 +213,22 @@ async def upload_excel(file: UploadFile = File(...)):
     except StopIteration:
         raise HTTPException(400, "Excel dosyası boş.")
     mapping = _map_headers(headers)
+    veri_idx = sorted(i for i, f in mapping.items() if f == "veri_n")
 
     rows = []
     sampled = 0
     for raw in rows_iter:
         row: dict = {field: "" for field in RowIn.model_fields}
         for idx, field in mapping.items():
-            if idx < len(raw):
+            if field != "veri_n" and idx < len(raw):
                 row[field] = _cell(raw[idx])
-        row["ornek_degerler"] = _split_samples(row.get("ornek_degerler") or "")
+        samples = _split_samples(row.get("ornek_degerler") or "")
+        for idx in veri_idx:
+            if idx < len(raw):
+                s = _cell(raw[idx])
+                if s and s not in samples:
+                    samples.append(s)
+        row["ornek_degerler"] = samples[: config.SAMPLE_VALUES_PER_COLUMN * 2]
         sampled += bool(row["ornek_degerler"])
         if row["kolon"]:
             rows.append(row)
@@ -309,14 +329,21 @@ def analyze(row: RowIn):
 
 @app.post("/api/export")
 def export_excel(req: ExportRequest):
-    """Sonuçları orijinal kolonlar + sınıflandırma sütunlarıyla .xlsx olarak indirir."""
+    """Sonuçları orijinal kolonlar + sınıflandırma sütunlarıyla .xlsx olarak indirir.
+
+    Sütun düzeni yüklenen envanterle birebir aynıdır (veri1…veriN örnek değer
+    sütunları dahil); sınıflandırma sütunları sona eklenir.
+    """
     wb = Workbook()
     ws = wb.active
     ws.title = "Sınıflandırma"
+    n_veri = max((len(it.row.ornek_degerler) for it in req.items), default=0)
     base_headers = [
         "Sunucu Ad", "Veri Tabanı Ad", "Şema Ad", "Tablo Ad", "Kolon Ad",
-        "Kolon Sıra No", "Kolon Veri Tipi", "Uzunluk", "Kuruş", "Null Flag", "PK Flag",
-    ]
+        "Kolon Sıra No", "Kolon Veri Tipi", "Kolon Veri Tipi Uzunluk",
+        "Kolon Veri Tipi Kuruş", "Kolon Null Flag (1-Nullable, 0-Not Null)",
+        "Birincil Anahtar/Primary Key Flag (1-PK, 0-PK değil)",
+    ] + [f"veri{i}" for i in range(1, n_veri + 1)]
     cat_headers = [f"{i}. {name}" for i, name in CATEGORIES.items()]
     ws.append(base_headers + cat_headers
               + ["Ana Kategori", "Olası Kategoriler", "Teknik Kolon",
@@ -333,6 +360,7 @@ def export_excel(req: ExportRequest):
         ws.append(
             [r.sunucu, r.veritabani, r.sema, r.tablo, r.kolon,
              r.sira, r.veri_tipi, r.uzunluk, r.kurus, r.nullable, r.pk]
+            + (r.ornek_degerler + [""] * n_veri)[:n_veri]
             + [1 if i in cats else 0 for i in CATEGORIES]
             + [f"{ana}. {res.get('ana_kategori_adi', '')}" if ana else "",
                ", ".join(res.get("kategori_adlari") or []),
