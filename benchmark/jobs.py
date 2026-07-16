@@ -35,7 +35,7 @@ async def _run(job_id: str, modes: list[str], use_judge: bool) -> None:
             "elapsed_seconds": elapsed,
             "modes": modes,
             "use_judge": use_judge,
-            "model": config.QWEN_MODEL,
+            "model": config.LLM_MODEL,
         }
         store.save_run(run_id, meta, result)
         _jobs[job_id] = {**_jobs[job_id], "status": "done", "run_id": run_id}

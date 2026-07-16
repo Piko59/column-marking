@@ -301,11 +301,6 @@ def review(req: ReviewRequest):
     return {"record": record, "stats": decisions.stats()}
 
 
-@app.get("/api/review/stats")
-def review_stats():
-    return decisions.stats()
-
-
 @app.post("/api/analyze")
 def analyze(row: RowIn):
     """LLM'siz hızlı analiz: önek çözümü + sözlük ipuçları (tekil sorgu ekranı için)."""

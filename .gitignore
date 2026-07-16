@@ -20,3 +20,6 @@ Thumbs.db
 
 # Insan inceleme kararlari (yerel, hassas olabilir)
 review_decisions.json
+
+# Claude Code yerel ayarları (kişisel makine yolları içerir)
+.claude/

@@ -23,7 +23,6 @@ from datetime import datetime, timezone
 import config
 
 from .categories import CATEGORIES
-from .rules import split_tokens
 
 VALID_ACTIONS = ("onayla", "duzelt", "notr")
 
@@ -131,67 +130,6 @@ def as_result(rec: dict, column_name: str) -> dict:
         "gerekce": f"Karar sözlüğü: bu kolon imzası {rec.get('tarih', '?')} tarihinde {label}.",
         "kaynak": "sozluk",
     }
-
-
-def _jaccard(a: set, b: set) -> float:
-    if not a or not b:
-        return 0.0
-    inter = a & b
-    if not inter:
-        return 0.0
-    return len(inter) / len(a | b)
-
-
-def similar_decisions(
-    cols: list[dict], k: int | None = None, min_sim: float | None = None
-) -> list[dict]:
-    """Verilen kolon grubuna en benzer, sınıflandırmayı etkileyen (onayla/duzelt)
-    kararları döndürür — few-shot örnek havuzu.
-
-    Benzerlik: kolon adlarının token kümesi Jaccard'ı (örn. mhIbanNo={mh,iban,no} ile
-    klaIbanNo={kla,iban,no} → 0.5) + veri tipi aynıysa küçük bonus. Skor, karardaki
-    kolonun partideki HERHANGİ bir kolona en yüksek benzerliğidir; eşik altındakiler
-    hiç dönmez (alakasız örnek modeli saptırır). Nötr kayıtlar havuzda yoktur.
-
-    Prompt bütçesi garantisi: dönen liste her zaman ≤ k — havuz binlerce kayda
-    büyüse de çağrı başına örnek maliyeti sabittir.
-    """
-    k = config.FEWSHOT_K if k is None else k
-    threshold = config.FEWSHOT_MIN_SIM if min_sim is None else min_sim
-    if k <= 0:
-        return []
-    _load()
-    pool = [r for r in _decisions.values() if r["action"] in ("onayla", "duzelt")]
-    if not pool:
-        return []
-    batch = [
-        (set(split_tokens(c.get("kolon", ""))), str(c.get("veri_tipi", "")).strip().lower())
-        for c in cols
-    ]
-    scored: list[tuple[float, dict]] = []
-    for rec in pool:
-        rec_tokens = set(split_tokens(rec.get("kolon", "")))
-        rec_type = str(rec.get("veri_tipi", "")).strip().lower()
-        best = 0.0
-        for tokens, dtype in batch:
-            s = _jaccard(rec_tokens, tokens)
-            if s and rec_type and rec_type == dtype:
-                s = min(1.0, s + 0.05)
-            if s > best:
-                best = s
-        if best >= threshold:
-            scored.append((best, rec))
-    scored.sort(key=lambda t: -t[0])
-    return [rec for _, rec in scored[:k]]
-
-
-def approved_records() -> list[dict]:
-    """Sınıflandırmayı etkileyen (onayla/duzelt) tüm kararların ham listesi.
-
-    examples.py bunu curated referans bankasıyla birleştirip tek bir few-shot retrieval
-    havuzu kurar — böylece insan onayı biriktikçe örnek havuzu otomatik zenginleşir."""
-    _load()
-    return [r for r in _decisions.values() if r["action"] in ("onayla", "duzelt")]
 
 
 def stats() -> dict:

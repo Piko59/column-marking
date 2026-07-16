@@ -17,7 +17,8 @@ Veritabanı kolon envanterini (Excel) 7 gizlilik kategorisine göre çok-etiketl
 ```bash
 pip install -r requirements.txt
 copy .env.example .env        # Linux/Mac: cp .env.example .env
-# .env dosyasını açıp OPENROUTER_API_KEY değerini kendi anahtarınızla doldurun
+# .env dosyasını açıp LLM_BASE_URL ve LLM_API_KEY değerlerini kurum içi
+# LLM ucunuza göre doldurun (OpenAI-uyumlu: vLLM / Ollama / gateway)
 uvicorn main:app --port 8000
 ```
 
@@ -60,10 +61,13 @@ Excel → Ön işleme        rules.py   olası önek/sözlük İPUÇLARI üretir
                                     asıl kısaltma açılımını LLM kendisi çıkarır ("acilim";
                                     emin değilse null → arayüzde "açılım bulunamadı")
       → Aşama 1          pipeline   tablo başına ≤25 kolon, tek prompt; LLM her kolon için
-                                    4 adım uygular: açılım → olası kategoriler → TEK ana
-                                    kategori → güven; teknik kolonlar "teknik" işaretlenir
-      → Aşama 2 (hakem)  pipeline   yalnız GERÇEKTEN kararsız kolonlar (güven < 0.60 ve
-                                    teknik değil) yeniden değerlendirilir
+                                    3 adım uygular: açılım → olası kategoriler (OLASILIK
+                                    dağılımıyla) → TEK ana kategori. Güven modelden alınmaz:
+                                    guven = en yüksek olasılık, marj = ilk iki olasılık farkı
+      → Aşama 2 (hakem)  pipeline   yalnız GERÇEKTEN kararsız kolonlar yeniden değerlendirilir:
+                                    guven < JUDGE_THRESHOLD (0.75) VEYA marj <
+                                    JUDGE_MARGIN_THRESHOLD (0.25); teknik kolonlar ve olasılık
+                                    döndürmeyen (eski format) sonuçlar hakeme gitmez
       → Excel çıktı      main.py    Ana Kategori + kategori başına 0/1 + teknik + açılım
                                     + güven + gerekçe
 ```
@@ -92,6 +96,11 @@ Sistemleri ve Elektronik Bankacılık Hizmetleri Hakkında Yönetmelik ("hassas 
 çalışmak üzere kuruludur; veri banka ağı dışına çıkmadığı için maskeleme yapılmaz —
 ham değerler (uzunluk, format, değer aralığı) içerik sinyalinin en güçlü kaynağıdır ve
 sınıflandırma doğruluğunu belirgin şekilde artırır (özellikle `content_only` modu).
+
+> ⚠️ **Uyum uyarısı:** `LLM_BASE_URL` mutlaka **kurum içi/yerel** bir ucu göstermelidir.
+> Gerçek banka verisi (müşteri/personel içeren örnek değerler) yurt dışı bir bulut ucuna
+> gönderilirse KVKK m.9 (yurt dışına aktarım) ve 5411 s.K. m.73 / BDDK sır paylaşımı
+> yükümlülükleri açısından risk doğar. Sentetik/test verisiyle harici uç kullanılabilir.
 
 Giriş yolları:
 1. **Envanter Excel'inde "Örnek Değerler" sütunu** — hücrede `;` `|` veya ", " ile
@@ -145,8 +154,9 @@ classifier/
   categories.py          7 kategori + tanımları + öncelik sırası (tek doğruluk kaynağı)
   rules.py               önek çözümü, tokenizasyon, anahtar kelime sözlüğü
   prompts.py             toplu sınıflandırma + hakem prompt'ları + prompt versiyon hash'i
+  decisions.py           insan inceleme kararları sözlüğü (onayla/düzelt/nötr)
   llm.py                 OpenAI-uyumlu istemci (retry + güvenli JSON ayıklama)
-  pipeline.py            orkestrasyon: kural → önbellek → toplu LLM → hakem (3 mod destekli)
+  pipeline.py            orkestrasyon: kural → sözlük → önbellek → toplu LLM → hakem (3 mod)
 benchmark/
   dataset.py             golden veri seti: 56 kavram × 2 isim grubu = 112 satır
   scorer.py              3 mod × dataset koşusu + çok boyutlu metrikler
@@ -174,21 +184,15 @@ Sonuç tablosundaki her satırda üç inceleme düğmesi vardır:
   ve dışa aktarılan kategorilere **hiçbir etkisi yoktur**. Alan uzmanı olmayan bir
   gözden geçirenin sonucu etkilemeden ilerlemesi içindir.
 
-### Few-shot: benzer kararların LLM'e örnek gösterilmesi
+Not: Karar sözlüğü yalnız **birebir** (kolon adı + veri tipi) imza eşleşmesinde devreye
+girer; benzer-ama-farklı adlı kolonlara genelleme yapılmaz — o kolonlar LLM'e gider.
+(Benzer kararların LLM'e few-shot örneği olarak gösterilmesi denendi, offline ölçümde
+sözcüksel benzerliğin ~%19 oranında kategori açısından yanıltıcı örnek getirdiği
+görülünce kaldırıldı; ileride anlamsal embedding ile yeniden değerlendirilebilir.)
 
-Birebir imza eşleşmesi yoksa bile, her LLM çağrısına o partideki kolon adlarına
-**en benzer en fazla `FEWSHOT_K` (varsayılan 8) onaylı/düzeltilmiş karar** örnek
-olarak eklenir — "İNSAN ONAYLI ÖNCEKİ KARARLAR (yol gösterici, bağlayıcı değil)"
-bloğu. Örn. `mhIbanNo` onaylandıysa, `klaIbanNo` geldiğinde model bu kararı görür
-ama kendi kararını verir (kaynak yine `llm`; güven=1.0 damgası yalnız birebir
-imza eşleşmesine özeldir).
-
-Şişme ve bozulma korumaları:
-- Benzerlik = kolon adı token kümelerinin Jaccard'ı (+ veri tipi bonusu);
-  `FEWSHOT_MIN_SIM` (0.3) altındakiler hiç eklenmez — alakasız örnek girmez.
-- Havuz kaç kayda büyürse büyüsün prompt'a giren örnek ≤ K (~400 token, sabit).
-- Nötr kayıtlar havuzda yoktur; benchmark modları bloğu hiç görmez.
-- `FEWSHOT_K=0` özelliği tamamen kapatır.
+Benchmark, `use_decisions=False` ile koşar: karar sözlüğü ve önbellek ölçüme
+karışmaz — aksi hâlde benchmark modelin yeteneğini değil, insanın önceden verdiği
+cevapların sızıntısını ölçerdi.
 
 İnceleme durumu Excel çıktısına "İnceleme" sütunu olarak yazılır
 (Onaylandı / Düzeltildi / Nötr). Karar sözlüğü `.gitignore`'dadır ve

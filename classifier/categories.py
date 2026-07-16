@@ -21,17 +21,23 @@ CATEGORIES = {
 # Eşit uyum durumunda en sıkı korunması gereken kategori kazanır (bkz. prompts.py
 # ADIM 3 ve JUDGE_SYSTEM_PROMPT ile aynı sıra). pipeline._sanitize buradan okur;
 # tek doğruluk kaynağı burasıdır.
-CATEGORY_PRIORITY: list[int] = [2, 3, 7, 5, 4, 6, 1]
+# 7 bilinçli olarak İÇERİK sınıflarının (3/5/4/6) ARKASINDA: BDDK BSEBY m.9/3'e göre
+# şifreli saklama, hassas/sır verinin bir YÜKÜMLÜLÜĞÜdür — kendi başına içerik sınıfı
+# değildir. Ana kategori içerik sınıfından seçilir; 7 saklama-biçimi bayrağı olarak
+# eşlik eder ve ancak içerik sınıfı taşımayan saf kripto artefaktlarında ana olur.
+CATEGORY_PRIORITY: list[int] = [2, 3, 5, 4, 6, 7, 1]
 
 CATEGORY_DEFINITIONS = """\
 1. Kişisel Veri (KVKK m.3/d)
    Kimliği belirli veya belirlenebilir GERÇEK KİŞİYE ilişkin her türlü bilgi.
    Örnekler: ad-soyad, TC kimlik no, vergi no (gerçek kişi), pasaport no, doğum tarihi/yeri,
    anne-baba adı, telefon, e-posta, adres, IP adresi, araç plakası, imza, fotoğraf, ses kaydı,
-   müşteri numarası, cinsiyet, medeni durum, uyruk, eğitim, meslek, aile bilgileri.
+   müşteri numarası, cinsiyet, medeni durum, uyruk, eğitim, meslek, aile bilgileri, ekonomik
+   veriler (kişinin maaşı, geliri, mal varlığı).
    SINIR: Tüzel kişilere (şirketlere) ait veriler kişisel veri DEĞİLDİR (ama 5'e girebilir).
+   Kişisel veri, kişi PERSONEL de olsa MÜŞTERİ de olsa kişisel veridir.
 
-2. Özel Nitelikli Kişisel Veri (KVKK m.6/1)
+2. Özel Nitelikli Kişisel Veri (KVKK m.6/1 — 7499 s.K. ile değişik hâli)
    Kanunda SINIRLI SAYIDA sayılmıştır, kıyas yoluyla GENİŞLETİLEMEZ:
    ırk, etnik köken, siyasi düşünce, felsefi inanç, din, mezhep veya diğer inançlar,
    kılık ve kıyafet, dernek/vakıf/sendika üyeliği, sağlık verileri (kan grubu, engellilik,
@@ -40,22 +46,34 @@ CATEGORY_DEFINITIONS = """\
    KURAL: 2'ye giren her veri aynı zamanda 1'dir. Listede olmayanlar (örn. maaş, finansal
    durum) ne kadar mahrem olursa olsun 2 DEĞİLDİR.
 
-3. Hassas Veri (BDDK Bilgi Sistemleri Yönetmeliği m.3)
-   Başta kimlik doğrulamada kullanılan veriler olmak üzere, üçüncü kişilerce ele geçirilmesi
-   hâlinde dolandırıcılığa ya da müşteri adına sahte işlem yapılmasına imkân verebilecek veriler:
-   parola, PIN, OTP/tek kullanımlık şifre, güvenlik sorusu-cevabı, kart numarası (PAN),
-   CVV/CVC, kart son kullanma tarihi, telefon bankacılığı şifresi.
-   Ek olarak kurum içi hassas kabul edilenler: maaş/gelir, kredi notu/skoru, risk
-   derecelendirmesi, kara liste/istihbarat kaydı.
+3. Hassas Veri (BDDK Bilgi Sistemleri Yönetmeliği m.3/o — RG 15.3.2020/31069)
+   ÇEKİRDEK (mevzuat lafzı): "Kimlik doğrulamada kullanılan veriler başta olmak üzere;
+   müşteriye ait olan, çeşitli sebeplerle bankaca muhafaza edilen ve üçüncü kişilerce ele
+   geçirilmesi hâlinde ... dolandırıcılık ya da müşteriler adına sahte işlem yapılmasına
+   imkân verebilecek nitelikteki veriler": parola, PIN, OTP/tek kullanımlık şifre, güvenlik
+   sorusu-cevabı, kart numarası (PAN), CVV/CVC, kart son kullanma tarihi, telefon
+   bankacılığı şifresi, erişim token'ları.
+   KURUM İÇİ GENİŞLETME (mevzuat lafzında yok; kurumsal tasnif kararı): maaş/gelir,
+   kredi notu/skoru, risk derecelendirmesi, kara liste/istihbarat kaydı da bu kategoriye
+   dahil edilir.
+   KURAL: Bankanın MÜŞTERİ HAKKINDA ürettiği değerlendirmeler (kredi notu/skoru, risk
+   derecesi, kara liste kaydı) 3'tür ve müşteri verisi olduğundan 5 de eklenir; bunlar
+   6 (kurumsal gizli) DEĞİLDİR. PERSONELE ait maaş/performans 3 + 1'dir (gerçek kişiye
+   ait ekonomik veri); 4 değildir (4, kişiye değil kurum geneline ait politika içindir).
+   KURAL: 3'e giren veriler BDDK BSEBY m.9/3 gereği şifreli saklanmalıdır — bu yüzden
+   çoğu zaman 7 de eşlik eder.
 
 4. Banka Sırrı (5411 s. BK m.73; Sır Yönetmeliği m.4; BDDK Genelgesi 2022/1)
-   BANKANIN KENDİSİNE ait, öğrenilmesi hâlinde rekabet gücünü veya güvenliğini zedeleyecek
-   bilgiler: henüz kamuya açıklanmamış mali veriler, strateji ve iş planları, kredi verme/
-   mevduat toplama gibi temel faaliyetlere ilişkin yönetim esasları, bankanın uyguladığı
-   teknik yöntemler, iç fiyatlama/marj/komisyon parametreleri, risk modelleri ve
-   parametreleri, iç limitler, denetim ve teftiş raporları, iç kontrol bulguları, insan
-   kaynakları verileri (kadro planı, ücret politikası), banka potansiyeline ilişkin bilgiler.
-   KURAL: Veri müşteriye değil bankanın kendi işleyişine aitse 4'tür.
+   MÜŞTERİ SIRRI NİTELİĞİ TAŞIMAYIP YALNIZCA BANKANIN KENDİSİNE ait, öğrenilmesi hâlinde
+   rekabet gücünü veya güvenliğini zedeleyecek bilgiler: henüz kamuya açıklanmamış mali
+   veriler, strateji ve iş planları, kredi verme/mevduat toplama gibi temel faaliyetlere
+   ilişkin yönetim esasları, bankanın uyguladığı teknik yöntemler, iç fiyatlama/marj/
+   komisyon parametreleri, risk modelleri ve parametreleri, iç limitler, denetim ve teftiş
+   raporları, iç kontrol bulguları, kurum geneline ait insan kaynakları politikaları
+   (kadro planı, ücret POLİTİKASI — tek bir kişinin maaşı değil), banka potansiyeline
+   ilişkin bilgiler.
+   KURAL: Veri müşteriye değil bankanın kendi işleyişine aitse 4'tür. Tek bir çalışana/
+   kişiye ait veri 4 değil 1(+3)'tür.
 
 5. Müşteri Sırrı (5411 s. BK m.73/3; Sır Yönetmeliği m.4)
    Bankacılık faaliyetlerine özgü olarak müşteri ilişkisi kurulduktan sonra oluşan, gerçek VE
@@ -68,13 +86,21 @@ CATEGORY_DEFINITIONS = """\
 
 6. Gizli / Çok Gizli Veri (kurumsal gizlilik tasnifi)
    Erişimi "bilmesi gereken" ilkesiyle en dar tutulması gereken, yetkisiz açıklanması kuruma
-   ciddi/hayati zarar verecek bilgiler: kimlik doğrulama sırları ve kriptografik anahtarlar,
-   güvenlik açığı ve sızma testi kayıtları, iç soruşturma/disiplin dosyaları, birleşme-devralma
-   çalışmaları, üst yönetim kararları, yetki-rol tanımları ve erişim listeleri.
+   ciddi/hayati zarar verecek BANKA İÇİ bilgiler: sistem kimlik doğrulama sırları ve
+   kriptografik anahtarlar, güvenlik açığı ve sızma testi kayıtları, iç soruşturma/disiplin
+   dosyaları, birleşme-devralma çalışmaları, üst yönetim kararları, yetki-rol tanımları ve
+   erişim listeleri.
+   SINIR: Müşteri hakkındaki değerlendirmeler (kredi notu, kara liste) buraya DEĞİL 3+5'e
+   girer; 6 kurumun kendi iç güvenlik/yönetim bilgisi içindir.
 
-7. Şifreli Veri (BDDK şifreli saklama yükümlülükleri)
+7. Şifreli Veri (BDDK BSEBY m.9/3: şifreli saklama yükümlülüğü)
    Veritabanında şifrelenmiş/hash'lenmiş/tokenize/maskeli SAKLANAN ya da mevzuat gereği öyle
    saklanması GEREKEN alanlar: parola hash'i (salted-hash), PIN blok, şifreli kart numarası,
-   CVV, API anahtarı, token, secret, sertifika/özel anahtar, şifreleme anahtarı.
-   KURAL: 7 saklama biçimiyle ilgilidir; içeriğine göre ayrıca 3/5/6 ile birlikte işaretlenir.
+   CVV, API anahtarı, token, secret, sertifika/özel anahtar, şifreleme anahtarı, salt/IV.
+   KURAL: 7 bir SAKLAMA BİÇİMİ kategorisidir, içerik sınıfı değildir (şifreli saklama,
+   BSEBY m.9/3'te hassas/sır verinin YÜKÜMLÜLÜĞÜ olarak düzenlenir). Bu yüzden içerik
+   sınıfı olan her kolonda ANA kategori içerik sınıfıdır (3/5/6...), 7 yanında eşlik eder:
+   parola hash'i → ana 3 (+7), şifreli kart no → ana 3 (+5,7), tokenize hesap no → ana 5 (+7),
+   şifreleme anahtarı → ana 6 (+7). ANA kategori 7 YALNIZCA içerik sınıfı taşımayan saf
+   kriptografik artefaktlarda olur (salt, IV, sertifika parmak izi gibi).
 """

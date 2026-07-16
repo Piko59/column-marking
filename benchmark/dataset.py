@@ -23,6 +23,13 @@ diye işaretleyip işaretlemediğini test eder. Toplam 56 kavram × 2 isim grubu
 Ground truth (ana_kategori / kategoriler / teknik) her kavram için elle, mevzuat
 tanımlarına (classifier/categories.py) referansla belirlenmiştir; her satırda kısa bir
 "gerekce" ile belgelenmiştir — bu, sonradan insan denetimi/itirazı için gereklidir.
+
+GROUND TRUTH v2 (Temmuz 2026): BDDK BSEBY m.9/3 dayanağıyla içerik-öncelikli kural
+uygulandı — şifreli saklama bir YÜKÜMLÜLÜKTÜR, içerik sınıfı değil. "7" kovasındaki
+kavramların ana kategorisi artık içerik sınıfıdır (parola hash → 3, API anahtarı → 6,
+tokenize hesap no → 5); yalnız saf kripto artefaktı (sertifika parmak izi) ana=7 kalır.
+Kova 3'e kişisel/müşteri eş-etiketleri eklendi (maaş → 1+3, kredi skoru → 3+5 vb.).
+Bu sürümle eski benchmark koşuları doğrudan karşılaştırılamaz.
 """
 
 from dataclasses import dataclass, field
@@ -130,34 +137,34 @@ _RAW: list[Concept] = [
             "Genetik test sonucu (SNP genotip notasyonu) KVKK m.6 genetik veri kapsamındadır."),
 
     # ============ 3. HASSAS VERİ — Personel (maaş/performans/güvenlik) + Operasyon Risk ============
-    Concept("c3_maas", "3", 3, [3], False, "hr", "Personel", "persNetMaas",
+    Concept("c3_maas", "3", 3, [1, 3], False, "hr", "Personel", "persNetMaas",
             "decimal", "10,2",
             ["18750.00", "22300.50", "15600.75"],
-            "Maaş/gelir BDDK hassas veri tanımına giren kurum-içi hassas bilgidir."),
-    Concept("c3_performans", "3", 3, [3], False, "hr", "Personel", "persPerformansNotu",
+            "Personel maaşı gerçek kişiye ait ekonomik veridir (1); kurum içi tasnifle hassas (3) kabul edilir — BDDK m.3/o lafzı müşteri verisiyle sınırlıdır, bu bir iç genişletmedir."),
+    Concept("c3_performans", "3", 3, [1, 3], False, "hr", "Personel", "persPerformansNotu",
             "decimal", "3,1",
             ["4.2", "3.7", "4.8"],
-            "Performans notu kurum-içi hassas veridir."),
-    Concept("c3_guvenlikcevap", "3", 3, [3], False, "hr", "Personel", "persGuvenlikCevap",
+            "Personel performans notu gerçek kişiye ait veridir (1); kurum içi tasnifle hassas (3) kabul edilir."),
+    Concept("c3_guvenlikcevap", "3", 3, [1, 3, 7], False, "hr", "Personel", "persGuvenlikCevap",
             "varchar", "100",
             ["Annemin kızlık soyadı Demir", "İlk evcil hayvanım Boncuk", "Doğduğum şehir Trabzon"],
-            "Güvenlik sorusu cevabı kimlik doğrulamada kullanılan hassas veridir."),
-    Concept("c3_otp", "3", 3, [3], False, "hr", "Personel", "persOtpKod",
+            "Güvenlik sorusu cevabı kimlik doğrulama verisidir (3); içeriği kişisel bilgidir (1) ve BSEBY m.9/3 gereği şifreli saklanmalıdır (7)."),
+    Concept("c3_otp", "3", 3, [3, 7], False, "hr", "Personel", "persOtpKod",
             "char", "6",
             ["482913", "091827", "657320"],
-            "Tek kullanımlık şifre (OTP) BDDK hassas veri tanımında açıkça sayılmıştır."),
-    Concept("c3_findeksskor", "3", 3, [3], False, "risk", "OperasyonRisk", "oprFindeksSkor",
+            "Tek kullanımlık şifre (OTP) BDDK hassas veri tanımının çekirdeğidir; şifreli saklanması gerekir (7)."),
+    Concept("c3_findeksskor", "3", 3, [3, 5], False, "risk", "OperasyonRisk", "oprFindeksSkor",
             "int", "",
             ["1250", "890", "1580"],
-            "Kredi skoru BDDK hassas veri tanımında açıkça sayılmıştır."),
-    Concept("c3_karaliste", "3", 3, [3], False, "risk", "OperasyonRisk", "oprKaraListe",
+            "Bankanın müşteri hakkında ürettiği kredi skoru: kurum içi hassas (3) + müşteri sırrı (5); 6 değildir."),
+    Concept("c3_karaliste", "3", 3, [3, 5], False, "risk", "OperasyonRisk", "oprKaraListe",
             "varchar", "50",
             ["KL-04 Dolandırıcılık Şüphesi", "Kayıt Yok", "KL-11 Sahte Belge"],
-            "Kara liste/istihbarat kaydı BDDK hassas veri tanımında açıkça sayılmıştır."),
-    Concept("c3_risknotu", "3", 3, [3], False, "risk", "OperasyonRisk", "oprRiskNotu",
+            "Müşteri kara liste/istihbarat kaydı: kurum içi hassas (3) + müşteri sırrı (5); 6 değildir."),
+    Concept("c3_risknotu", "3", 3, [3, 5], False, "risk", "OperasyonRisk", "oprRiskNotu",
             "varchar", "10",
             ["B2", "AA", "C1"],
-            "Risk derecelendirme notu BDDK hassas veri tanımında açıkça sayılmıştır."),
+            "Müşteri risk derecelendirme notu: kurum içi hassas (3) + müşteri sırrı (5); 6 değildir."),
 
     # ============ 4. BANKA SIRRI — bankanın kendi iç işleyişi, müşteriye ait değil ============
     Concept("c4_marj", "4", 4, [4], False, "yonetim", "StratejiPlan", "spFaizMarj",
@@ -265,43 +272,42 @@ _RAW: list[Concept] = [
             "Erişim izin grubu tanımı gizli/çok gizli veri tanımında açıkça sayılmıştır."),
 
     # ============ 7. ŞİFRELİ VERİ — şifreli/hash'lenmiş saklanan alanlar ============
-    Concept("c7_sifrehash", "7", 7, [7], False, "guvenlik", "GuvenlikKimlik", "gkParolaHash",
+    Concept("c7_sifrehash", "7", 3, [3, 7], False, "guvenlik", "GuvenlikKimlik", "gkParolaHash",
             "varchar", "60",
             ["$2b$12$KIXQ7z8yN3vLPq1RmXe9AOe5tGxHhZ8jKp0mYcVbNwXeQsRtLdKla",
              "$2b$12$T9nRfL2mXpQaZ7Ye3sV4NOWzYb1cKdEfGhIjKlMnOpQrStUvWxYz1",
              "$2b$12$A1b2C3d4E5f6G7h8I9j0KeXyZ9wVuTsRqPoNmLkJiHgFeDcBa1234"],
-            "Parola hash'i (bcrypt biçimi) şifreli veri tanımında açıkça sayılmıştır."),
-    Concept("c7_pinblok", "7", 7, [7], False, "guvenlik", "GuvenlikKimlik", "gkPinBlok",
+            "Parola kimlik doğrulama verisidir (içerik: 3); hash'lenmiş saklandığı için 7 eşlik eder — ana kategori içerik sınıfıdır."),
+    Concept("c7_pinblok", "7", 3, [3, 7], False, "guvenlik", "GuvenlikKimlik", "gkPinBlok",
             "varchar", "32",
             ["4F2A9C1B8E3D7F60A1B2C3D4E5F60718", "9B3E1A2C4D5F60718293A4B5C6D7E8F0",
              "2C4E6A8B0D1F3547698A0B2C4D6E8F10"],
-            "PIN blok şifreli veri tanımında açıkça sayılmıştır."),
-    Concept("c7_apikeyhash", "7", 7, [7], False, "guvenlik", "GuvenlikKimlik", "gkApiAnahtarHash",
+            "PIN kimlik doğrulama verisidir (içerik: 3); PIN blok olarak şifreli saklanır (7) — ana kategori içerik sınıfıdır."),
+    Concept("c7_apikeyhash", "7", 6, [6, 7], False, "guvenlik", "GuvenlikKimlik", "gkApiAnahtarHash",
             "varchar", "64",
             ["sha256:a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f6789",
              "sha256:9876fedc1234abcd9876fedc1234abcd9876fedc1234abcd9876fedc1234ab",
              "sha256:1122aabb3344ccdd1122aabb3344ccdd1122aabb3344ccdd1122aabb3344cc"],
-            "API anahtarı hash'i şifreli veri tanımında açıkça sayılmıştır."),
+            "API anahtarı banka sisteminin kimlik doğrulama sırrıdır (içerik: 6); hash olarak saklanır (7) — ana kategori içerik sınıfıdır."),
     Concept("c7_sertifikaparmak", "7", 7, [7], False, "guvenlik", "GuvenlikKimlik", "gkSertifikaFingerprint",
             "varchar", "64",
             ["SHA256:AB:CD:EF:12:34:56:78:90:AB:CD:EF:12:34:56:78:90",
              "SHA256:98:76:54:32:10:FE:DC:BA:98:76:54:32:10:FE:DC:BA",
              "SHA256:11:22:33:44:55:66:77:88:99:00:AA:BB:CC:DD:EE:FF"],
-            "Sertifika/özel anahtar parmak izi şifreli veri tanımında açıkça sayılmıştır."),
-    Concept("c7_kartnoenc", "7", 7, [3, 5, 7], False, "guvenlik", "MusteriKartSifreli", "mksKartNoSifreli",
+            "Sertifika parmak izi içerik sınıfı taşımayan saf kriptografik artefakttır — ana kategorinin 7 olduğu ender durum."),
+    Concept("c7_kartnoenc", "7", 3, [3, 5, 7], False, "guvenlik", "MusteriKartSifreli", "mksKartNoSifreli",
             "varchar", "64",
             ["enc:AES256:8f3a9c2b1e7d4f6a0c5b8e2d9f1a3c7b", "enc:AES256:2d5f8a1c3e7b9d0f4a6c8e2b5d9f1a3c",
              "enc:AES256:7c9e1a3b5d7f9012a4c6e8b0d2f4a6c8"],
-            "Şifreli kart numarası (PAN); saklama biçimi 7, içerik kimlik doğrulama+müşteri "
-            "verisi olduğundan 3 ve 5 de eklenir (bkz. categories.py kural 7)."),
-    Concept("c7_cvvenc", "7", 7, [3, 5, 7], False, "guvenlik", "MusteriKartSifreli", "mksCvvSifreli",
+            "Kart numarası (PAN) kimlik doğrulama verisidir (ana: 3) ve müşteri verisidir (5); şifreli saklandığından 7 eşlik eder."),
+    Concept("c7_cvvenc", "7", 3, [3, 5, 7], False, "guvenlik", "MusteriKartSifreli", "mksCvvSifreli",
             "varchar", "32",
             ["enc:9f2a4c6e", "enc:1b3d5f7a", "enc:8e0c2a4d"],
-            "Şifreli CVV; PAN ile aynı gerekçeyle 3, 5 ve 7 birlikte işaretlenir."),
-    Concept("c7_tokenlenmisno", "7", 7, [5, 7], False, "guvenlik", "MusteriKartSifreli", "mksTokenlenmisNo",
+            "CVV kimlik doğrulama verisidir (ana: 3), müşteri kart verisidir (5), şifreli saklanır (7)."),
+    Concept("c7_tokenlenmisno", "7", 5, [5, 7], False, "guvenlik", "MusteriKartSifreli", "mksTokenlenmisNo",
             "varchar", "40",
             ["TKN_9f8e7d6c5b4a3210", "TKN_1a2b3c4d5e6f7089", "TKN_00ff11ee22dd33cc"],
-            "Tokenize edilmiş hesap no; saklama biçimi 7, içerik müşteri hesabı olduğundan 5 de eklenir."),
+            "Tokenize hesap no: içerik müşteri hesabıdır (ana: 5); tokenize saklandığından 7 eşlik eder."),
 
     # ============ BONUS — TEKNİK/İŞLEMSEL (yanlış pozitif riski ölçümü) ============
     # Bu kova resmi 7 kategoriden biri DEĞİL; skor motoru bunu ayrı ölçer: doğru

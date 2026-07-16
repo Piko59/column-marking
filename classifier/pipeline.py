@@ -17,7 +17,7 @@ import threading
 
 import config
 
-from . import decisions, examples, llm, prompts, rules
+from . import decisions, llm, prompts, rules
 from .categories import CATEGORIES, CATEGORY_PRIORITY
 
 # classify_rows(mode=...) — bkz. fonksiyon docstring'i.
@@ -41,13 +41,13 @@ _cache_loaded = False
 
 
 def _cache_key(row: dict) -> str:
-    # Model adı + prompt hash'i anahtarın parçası: model veya prompt değişince eski
-    # kararlar otomatik geçersizleşir (aksi hâlde önbellek sessizce bayat kalırdı).
+    # Model adı + prompt hash'i anahtarın parçası: biri değişince eski kararlar otomatik
+    # geçersizleşir (aksi hâlde önbellek sessizce bayat kalırdı).
     base = "|".join(
         str(row.get(k, "")).strip().lower()
         for k in ("sema", "tablo", "kolon", "veri_tipi")
     )
-    return f"{config.QWEN_MODEL}|{prompts.PROMPT_VERSION}|{base}"
+    return f"{config.LLM_MODEL}|{prompts.PROMPT_VERSION}|{base}"
 
 
 def _load_cache() -> None:
@@ -113,6 +113,15 @@ def _parse_olasi_kategoriler(raw) -> tuple[list[int], dict[int, float], bool]:
 def _sanitize(result: dict, column_name: str, source: str) -> dict:
     raw = result.get("olasi_kategoriler") or result.get("kategoriler") or []
     cats, olas, has_probs = _parse_olasi_kategoriler(raw)
+
+    # Toplam olasılık 1'i AŞIYORSA aşağı normalize et — aksi hâlde talimata uymayan bir
+    # dağılım (örn. 0.9 + 0.9) guven'i yapay şişirir ve hakem tetiğini atlatır. Toplam
+    # 1'in ALTINDAYSA dokunma: eksik kütle "listelenmemiş kuyruk" demektir; yukarı
+    # normalize etmek modelin beyan etmediği bir kesinliği uydurmak olur.
+    if has_probs and olas:
+        total = sum(olas.values())
+        if total > 1.001:
+            olas = {c: p / total for c, p in olas.items()}
 
     # Olasılığa göre azalan sırala; eşitlikte CATEGORY_PRIORITY kazananır.
     # (Yani model tüm kategorilere aynı olasılığı verdiyse, mevzuattaki
@@ -187,11 +196,9 @@ def _error_result(column_name: str, msg: str) -> dict:
 
 # --- Aşamalar ----------------------------------------------------------------
 
-async def _classify_group(
-    schema: str, table: str, cols: list[dict], examples: list[dict] | None = None
-) -> list[dict]:
+async def _classify_group(schema: str, table: str, cols: list[dict]) -> list[dict]:
     """Aşama 1: bir tablonun kolon grubunu tek çağrıda sınıflandırır."""
-    user_prompt = prompts.build_batch_prompt(schema, table, cols, examples=examples)
+    user_prompt = prompts.build_batch_prompt(schema, table, cols)
     try:
         raw = await llm.chat(prompts.SYSTEM_PROMPT, user_prompt)
         parsed = llm.extract_json(raw)
@@ -220,7 +227,7 @@ async def _classify_group(
 
 
 async def _classify_multi_group(
-    table_groups: list[tuple[str, str, list[dict]]], examples: list[dict] | None = None
+    table_groups: list[tuple[str, str, list[dict]]],
 ) -> list[dict]:
     """Aşama 1 (çoklu tablo): birden fazla KÜÇÜK tabloyu tek çağrıda sınıflandırır.
 
@@ -230,7 +237,7 @@ async def _classify_multi_group(
     bölümünde ayrı verildiği için doğruluk etkilenmez (bkz. prompts.build_multi_table_prompt).
     """
     all_cols = [c for _, _, cols in table_groups for c in cols]
-    user_prompt = prompts.build_multi_table_prompt(table_groups, examples=examples)
+    user_prompt = prompts.build_multi_table_prompt(table_groups)
     try:
         raw = await llm.chat(prompts.SYSTEM_PROMPT, user_prompt)
         parsed = llm.extract_json(raw)
@@ -349,7 +356,7 @@ async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
 
 async def classify_rows(
     rows: list[dict], use_judge: bool = True, mode: str = "name_content",
-    use_examples: bool = True,
+    use_decisions: bool = True,
 ) -> list[dict]:
     """Satır listesini sınıflandırır; giriş sırasıyla aynı sırada sonuç döndürür.
 
@@ -360,32 +367,35 @@ async def classify_rows(
                             yalnız örnek değerler + tip/uzunluk/PK üzerinden sınıflandırma
                             zorlanır. Bu üç mod, "isimden mi anlıyoruz, içerikten mi, yoksa
                             ikisi birden mi" sorusunu ölçmek için var (bkz. benchmark).
-    use_examples: dinamik few-shot (curated referans + insan onaylı örnekler) prompt'a
-          eklensin mi. Üretimde True. BENCHMARK False geçmeli: curated örnek bankası golden
-          veri setiyle KAVRAM olarak örtüşür (örn. curated "ibanNo→5" ≈ golden IBAN'ın
-          cevabı); açık bırakılırsa benchmark modelin ham yeteneğini değil, örnek
-          sızıntısını ölçer. Few-shot yalnız name_content modunda etkilidir (benchmark'ın
-          name_only/content_only modları sinyal izole eder).
+    use_decisions: İNSAN BİLGİSİ kullanılsın mı — iki mekanizmanın ortak kapısı:
+          (a) karar sözlüğü (decisions.lookup — birebir imza eşleşmesi),
+          (b) sonuç önbelleği (cache, üretim sonuçlarıyla karışmasın diye).
+          Üretimde True. BENCHMARK False geçmeli: karar sözlüğü golden veri setiyle
+          örtüşebilir; açık bırakılırsa benchmark modelin ham yeteneğini değil, insanın
+          önceden verdiği cevapların sızıntısını ölçer. İkisi de yalnız name_content
+          modunda zaten etkindir (name_only/content_only sinyal izole eder).
     """
     if mode not in VALID_MODES:
         raise ValueError(f"Geçersiz mode: {mode!r}; beklenen: {VALID_MODES}")
-    # Önbellek yalnız üretim modunda (name_content) kullanılır: benchmark modları
-    # kasıtlı olarak isim/içerik sinyalini kısıtlar, bu yüzden her zaman taze koşar.
-    if config.USE_CACHE and mode == "name_content":
+    # Önbellek + karar sözlüğü yalnız ÜRETİM yolunda (name_content VE use_decisions)
+    # kullanılır: benchmark modları kasıtlı olarak sinyali kısıtlar ve önceden bilinen
+    # cevapların (sözlük/önbellek) ölçüme sızmaması gerekir — her zaman taze koşarlar.
+    production_path = mode == "name_content" and use_decisions
+    if config.USE_CACHE and production_path:
         _load_cache()
     results: list[dict | None] = [None] * len(rows)
 
     # 1-2: karar sözlüğü + kural analizi + önbellek
     pending: dict[tuple[str, str], list[tuple[int, dict]]] = {}
     for idx, row in enumerate(rows):
-        if mode == "name_content":
+        if production_path:
             # İnsan kararı (onayla/düzelt) her şeyden önce gelir: aynı kolon imzası
             # bir daha LLM'e gitmez. Nötr kayıtlar lookup'tan hiç dönmez (etkisiz).
             decided = decisions.lookup(row)
             if decided:
                 results[idx] = decisions.as_result(decided, row.get("kolon", ""))
                 continue
-        if config.USE_CACHE and mode == "name_content":
+        if config.USE_CACHE and production_path:
             cached = _cache.get(_cache_key(row))
             if cached:
                 results[idx] = {**cached, "kaynak": "cache"}
@@ -417,21 +427,13 @@ async def classify_rows(
     superbatches = _pack_into_superbatches(pending, config.BATCH_SIZE)
 
     async def process_superbatch(sb: list[tuple[tuple[str, str], list[tuple[int, dict]]]]):
-        # Few-shot: bu çağrıdaki kolonlara en benzer örnekler (curated referans banka +
-        # insan onaylı kararlar, ≤ FEWSHOT_K). Yalnız üretim modunda (name_content) —
-        # benchmark modları modelin ham yeteneğini ölçer, few-shot ile kirlenmemeli.
-        all_chunk_cols = [c for _, items in sb for _, c in items]
-        few_shot = (
-            examples.retrieve(all_chunk_cols)
-            if (mode == "name_content" and use_examples) else []
-        )
         if len(sb) == 1:
             (schema, table), chunk = sb[0]
             cols = [c for _, c in chunk]
-            group_results = await _classify_group(schema, table, cols, examples=few_shot)
+            group_results = await _classify_group(schema, table, cols)
         else:
             table_groups = [(gk[0], gk[1], [c for _, c in chunk]) for gk, chunk in sb]
-            group_results = await _classify_multi_group(table_groups, examples=few_shot)
+            group_results = await _classify_multi_group(table_groups)
             chunk = [pair for _, items in sb for pair in items]
 
         # 4: hakem geçişi — İKİ BAĞIMSIZ TETİKLEYİCİ (biri yeterli):
@@ -464,19 +466,14 @@ async def classify_rows(
 
         for (idx, col), res in zip(chunk, group_results):
             results[idx] = res
-            if config.USE_CACHE and mode == "name_content" and res["kaynak"] != "hata":
+            if config.USE_CACHE and production_path and res["kaynak"] != "hata":
                 with _cache_lock:
                     _cache[_cache_key(rows[idx])] = {
                         k: v for k, v in res.items() if k != "kaynak"
                     } | {"kaynak_orj": res["kaynak"]}
-            # Şeffaflık: bu kolona karar verirken prompta giren en yakın örnekler
-            # (curated referans + insan onaylı). Arayüzde gösterilir. Önbelleğe yazımdan
-            # SONRA eklenir — display verisi cache'i şişirmesin/bayatlatmasın.
-            if mode == "name_content" and use_examples and res["kaynak"] != "hata":
-                res["benzer_ornekler"] = examples.nearest_for_column(col)
 
     await asyncio.gather(*(process_superbatch(sb) for sb in superbatches))
-    if config.USE_CACHE and mode == "name_content" and pending:
+    if config.USE_CACHE and production_path and pending:
         _save_cache()
 
     return [r or _error_result(rows[i].get("kolon", "?"), "işlenemedi") for i, r in enumerate(results)]

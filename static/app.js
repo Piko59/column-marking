@@ -17,6 +17,45 @@ const CONCURRENCY = 3;    // eşzamanlı istek sayısı
 
 const $ = (id) => document.getElementById(id);
 
+// ============ Tema (açık / koyu) ============
+// Öncelik: URL ?theme=... (test/paylaşım) > localStorage > işletim sistemi tercihi.
+(function initTheme() {
+  const fromUrl = new URLSearchParams(location.search).get("theme");
+  const saved = fromUrl === "dark" || fromUrl === "light"
+    ? fromUrl : localStorage.getItem("ki-theme");
+  if (saved === "dark" || saved === "light") {
+    document.documentElement.dataset.theme = saved;
+  }
+})();
+
+function effectiveTheme() {
+  return document.documentElement.dataset.theme ||
+    (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+}
+
+function syncThemeButton() {
+  const btn = $("themeToggle");
+  if (!btn) return;
+  const dark = effectiveTheme() === "dark";
+  btn.textContent = dark ? "☀" : "☾";
+  btn.title = dark ? "Açık temaya geç" : "Koyu temaya geç";
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  syncThemeButton();
+  const btn = $("themeToggle");
+  if (btn) btn.addEventListener("click", () => {
+    const next = effectiveTheme() === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("ki-theme", next);
+    syncThemeButton();
+  });
+});
+
+// Güven eşikleri — backend ile hizalı (config.JUDGE_THRESHOLD=0.75):
+// < CONF_LOW hakem bölgesi/insan incelemesi ister; >= CONF_HIGH net karar.
+const CONF_LOW = 0.75, CONF_HIGH = 0.9;
+
 // ============ Yardımcılar ============
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -79,7 +118,7 @@ function acilimHtml(result) {
 function confHtml(result) {
   if (!result || result.kaynak === "hata") return "";
   const v = result.guven;
-  const cls = v < 0.6 ? "low" : v < 0.8 ? "mid" : "high";
+  const cls = v < CONF_LOW ? "low" : v < CONF_HIGH ? "mid" : "high";
   const src = { "llm+hakem": "hakem", cache: "önbellek", sozluk: "sözlük", insan: "insan" }[result.kaynak] || "";
   return `<span class="conf ${cls}">${v.toFixed(2)}</span>` +
          (src ? `<span class="src-tag">${src}</span>` : "");
@@ -124,46 +163,6 @@ function probsHtml(result) {
     </div>`;
   }
   return `<div class="prob-dist">${rows}</div>${marginTag}`;
-}
-
-// Dinamik few-shot şeffaflığı: bu kolona karar verilirken prompta giren en yakın
-// referans/insan-onaylı örnekler. "Model neye bakarak karar verdi" sorusunu görünür kılar.
-const NEAR_SRC_LABELS = { referans: "referans", onayla: "insan ✓", duzelt: "insan ✎" };
-
-function nearMainCat(ex) {
-  const ana = ex.ana_kategori;
-  return ana ? `<span class="badge c${ana}" title="${esc(ex.ana_kategori_adi || "")}">${ana}. ${esc(ex.ana_kategori_adi || state.categories[ana] || "")}</span>` : "";
-}
-
-// Tekil sorgu için tam blok
-function similarExamplesHtml(result) {
-  if (!result || result.kaynak === "hata") return "";
-  const ex = result.benzer_ornekler || [];
-  if (!ex.length) {
-    return '<span class="dim">Bu kolona yeterince benzer örnek bulunamadı (havuz büyüdükçe artacak).</span>';
-  }
-  return `<ul class="near-list">${ex.map((e) => `
-    <li>
-      <span class="near-head">
-        <span class="mono">${esc(e.kolon)}</span>${e.veri_tipi ? `<span class="dim"> (${esc(e.veri_tipi)})</span>` : ""}
-        <span class="near-sim" title="Ad benzerliği (token Jaccard)">%${Math.round((e.benzerlik || 0) * 100)}</span>
-        <span class="near-src">${NEAR_SRC_LABELS[e.kaynak] || e.kaynak || ""}</span>
-      </span>
-      <span class="near-cats">${nearMainCat(e)}${(e.kategoriler || []).filter((c) => c !== e.ana_kategori).map((c) =>
-        `<span class="badge sec c${c}">${c}</span>`).join("")}${e.teknik ? '<span class="badge tek">teknik</span>' : ""}</span>
-      ${e.gerekce ? `<span class="near-reason dim">${esc(e.gerekce)}</span>` : ""}
-    </li>`).join("")}</ul>`;
-}
-
-// Tablo gerekçe hücresi için kompakt satır
-function similarExamplesInline(result) {
-  if (!result || result.kaynak === "hata") return "";
-  const ex = result.benzer_ornekler || [];
-  if (!ex.length) return "";
-  const chips = ex.map((e) =>
-    `<span class="near-chip" title="${esc(e.kolon)} (${NEAR_SRC_LABELS[e.kaynak] || ""}, %${Math.round((e.benzerlik || 0) * 100)})${e.gerekce ? " — " + esc(e.gerekce) : ""}">${esc(e.kolon)}→${e.ana_kategori || "?"}</span>`
-  ).join("");
-  return `<div class="near-inline" title="Bu kolona en yakın referans örnekler (dinamik few-shot havuzundan)">≈ ${chips}</div>`;
 }
 
 // ============ İnsan inceleme (Onayla / Düzelt / Nötr) ============
@@ -272,13 +271,19 @@ $("rvSave").addEventListener("click", () => {
 });
 
 // ============ Sekmeler ============
+function activateTab(name) {
+  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".tab-panel").forEach((p) =>
+    p.classList.toggle("active", p.id === "tab-" + name));
+}
 document.querySelectorAll(".tab").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b === btn));
-    document.querySelectorAll(".tab-panel").forEach((p) =>
-      p.classList.toggle("active", p.id === "tab-" + btn.dataset.tab));
-  });
+  btn.addEventListener("click", () => activateTab(btn.dataset.tab));
 });
+// Derin bağlantı: ?tab=single | benchmark — sekmeyi doğrudan açar (paylaşım/test)
+{
+  const t = new URLSearchParams(location.search).get("tab");
+  if (t && document.getElementById("tab-" + t)) activateTab(t);
+}
 
 // ============ Excel yükleme ============
 const dropzone = $("dropzone");
@@ -427,7 +432,7 @@ function updateStats() {
     if (r.kaynak === "hata") { errors++; return; }
     classified++;
     if (!r.kategoriler.length) none++;
-    if (r.guven < 0.6) lowConf++;
+    if (r.guven < CONF_LOW) lowConf++;
     if (r.ana_kategori) counts[r.ana_kategori] = (counts[r.ana_kategori] || 0) + 1;
     if (r.inceleme) rev[r.inceleme]++;
   });
@@ -464,7 +469,7 @@ function filteredIndexes() {
     if (cat && !(res && res.kategoriler.includes(Number(cat)))) return false;
     if (status === "classified" && !(res && res.kaynak !== "hata")) return false;
     if (status === "pending" && res) return false;
-    if (status === "lowconf" && !(res && res.kaynak !== "hata" && res.guven < 0.6)) return false;
+    if (status === "lowconf" && !(res && res.kaynak !== "hata" && res.guven < CONF_LOW)) return false;
     if (status === "none" && !(res && res.kaynak !== "hata" && !res.kategoriler.length)) return false;
     if (status === "error" && !(res && res.kaynak === "hata")) return false;
     return true;
@@ -491,7 +496,7 @@ function renderTable() {
       <td class="dim">${r.pk === "1" ? "PK" : ""}</td>
       <td>${badgeHtml(res)}</td>
       <td>${confHtml(res)}</td>
-      <td class="reason">${esc(res ? res.gerekce : "")}${res ? similarExamplesInline(res) : ""}</td>
+      <td class="reason">${esc(res ? res.gerekce : "")}</td>
       <td>${reviewHtml(res, i)}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="11" class="dim" style="text-align:center;padding:24px">Eşleşen satır yok</td></tr>`;
@@ -577,7 +582,6 @@ function renderSingleResult(row, result, analysis) {
     <div class="result-block"><h3>Olasılık Dağılımı</h3>${probsHtml(result)}</div>
     <div class="result-block"><h3>Güven</h3>${confHtml(result) || "-"}</div>
     <div class="result-block"><h3>Gerekçe</h3><div class="result-reason">${esc(result.gerekce) || "-"}</div></div>
-    <div class="result-block"><h3>Çağrılan En Yakın Örnekler <span class="dim" style="font-weight:400">(dinamik few-shot)</span></h3>${similarExamplesHtml(result)}</div>
     ${analysis.note ? `<div class="result-block"><h3>Önek Çözümü</h3><div class="result-reason">${esc(analysis.note)}</div></div>` : ""}
     ${hints.length ? `<div class="result-block"><h3>Sözlük İpuçları</h3>
       <ul class="hint-list">${hints.map(([t, cats]) =>

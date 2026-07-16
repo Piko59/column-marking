@@ -17,11 +17,13 @@ from classifier.pipeline import (
 class TestCacheKey:
     def test_composes_schema_table_column_type(self):
         row = {"sema": "dbo", "tablo": "Customer", "kolon": "Ad", "veri_tipi": "varchar"}
-        assert _cache_key(row) == f"{config.QWEN_MODEL}|{prompts.PROMPT_VERSION}|dbo|customer|ad|varchar"
+        assert _cache_key(row) == (
+            f"{config.LLM_MODEL}|{prompts.PROMPT_VERSION}|dbo|customer|ad|varchar"
+        )
 
     def test_missing_fields_default_to_empty(self):
         row = {"kolon": "Ad"}
-        assert _cache_key(row) == f"{config.QWEN_MODEL}|{prompts.PROMPT_VERSION}|||ad|"
+        assert _cache_key(row) == f"{config.LLM_MODEL}|{prompts.PROMPT_VERSION}|||ad|"
 
     def test_case_and_whitespace_insensitive(self):
         a = _cache_key({"sema": " DBO ", "tablo": "Customer", "kolon": "Ad", "veri_tipi": "varchar"})
@@ -31,7 +33,7 @@ class TestCacheKey:
     def test_key_changes_when_model_changes(self, monkeypatch):
         row = {"sema": "dbo", "tablo": "Customer", "kolon": "Ad", "veri_tipi": "varchar"}
         before = _cache_key(row)
-        monkeypatch.setattr(config, "QWEN_MODEL", "some-other-model")
+        monkeypatch.setattr(config, "LLM_MODEL", "some-other-model")
         after = _cache_key(row)
         assert before != after
 
@@ -65,7 +67,7 @@ class TestSanitize:
         assert result["ana_kategori"] == 2
 
     def test_ana_kategori_fallback_uses_priority_not_min_id(self):
-        # ana_kategori verilmemiş; olası kategoriler [1, 5] -> öncelik sırasında (2>3>7>5>4>6>1)
+        # ana_kategori verilmemiş; olası kategoriler [1, 5] -> öncelik sırasında (2>3>5>4>6>7>1)
         # 5, 1'den önce geldiği için 5 seçilmeli (cats[0]=1 DEĞİL)
         result = _sanitize({"olasi_kategoriler": [1, 5], "guven": 0.8}, "col", "llm")
         assert result["ana_kategori"] == 5
@@ -75,10 +77,12 @@ class TestSanitize:
         assert result["ana_kategori"] == 2
 
     def test_invalid_ana_kategori_falls_back_to_priority(self):
+        # İçerik-öncelikli kural (BSEBY m.9/3): 7 saklama bayrağıdır — eşitlikte içerik
+        # sınıfı (4) kazanır; öncelik 2>3>5>4>6>7>1.
         result = _sanitize(
             {"olasi_kategoriler": [4, 7], "ana_kategori": 99, "guven": 0.8}, "col", "llm"
         )
-        assert result["ana_kategori"] == 7  # 7 > 4 önceliğinde
+        assert result["ana_kategori"] == 4
 
     def test_ana_kategori_not_in_list_gets_added(self):
         result = _sanitize({"olasi_kategoriler": [4], "ana_kategori": 6, "guven": 0.8}, "col", "llm")
@@ -101,6 +105,25 @@ class TestSanitize:
             {"olasi_kategoriler": [{"id": 1, "olasilik": 1.5}]}, "c", "llm")["guven"] == 1.0
         assert _sanitize(
             {"olasi_kategoriler": [{"id": 1, "olasilik": -3}]}, "c", "llm")["guven"] == 0.0
+
+    def test_probabilities_summing_above_one_get_normalized(self):
+        # Talimata uymayan dağılım (0.6+0.6=1.2) guven'i yapay şişirmemeli:
+        # aşağı normalize edilir → guven 0.5, marj 0 → hakem tetiklenebilir kalır.
+        result = _sanitize(
+            {"olasi_kategoriler": [{"id": 5, "olasilik": 0.6}, {"id": 1, "olasilik": 0.6}],
+             "ana_kategori": 5}, "c", "llm",
+        )
+        assert result["guven"] == 0.5
+        assert result["marj"] == 0.0
+
+    def test_probabilities_summing_below_one_not_inflated(self):
+        # Toplam 1'in altındaysa (0.9 tek başına) yukarı normalize ETME — modelin beyan
+        # etmediği kesinliği uydurma; guven 0.9 kalır.
+        result = _sanitize(
+            {"olasi_kategoriler": [{"id": 1, "olasilik": 0.9}], "ana_kategori": 1},
+            "c", "llm",
+        )
+        assert result["guven"] == 0.9
 
     def test_legacy_format_has_zero_confidence(self):
         # Eski format (yalnız id listesi) → olasılık bilgisi yok → güven=0, marj=0.

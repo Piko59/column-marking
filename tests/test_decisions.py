@@ -84,139 +84,6 @@ class TestAsResult:
         assert res["kategori_adlari"] == ["Kişisel Veri", "Müşteri Sırrı"]
 
 
-class TestSimilarDecisions:
-    def _approve_iban(self):
-        decisions.save_decision(
-            {"kolon": "mhIbanNo", "veri_tipi": "varchar"}, "onayla",
-            ana_kategori=5, kategoriler=[1, 5],
-        )
-
-    def test_similar_column_retrieved(self):
-        # mhIbanNo={mh,iban,no} ~ klaIbanNo={kla,iban,no} → Jaccard 0.5 ≥ eşik
-        self._approve_iban()
-        found = decisions.similar_decisions([{"kolon": "klaIbanNo", "veri_tipi": "varchar"}])
-        assert len(found) == 1
-        assert found[0]["kolon"] == "mhIbanNo"
-
-    def test_unrelated_column_below_threshold(self):
-        self._approve_iban()
-        assert decisions.similar_decisions([{"kolon": "arState", "veri_tipi": "smallint"}]) == []
-
-    def test_notr_excluded_from_pool(self):
-        decisions.save_decision({"kolon": "mhIbanNo", "veri_tipi": "varchar"}, "notr")
-        assert decisions.similar_decisions([{"kolon": "klaIbanNo", "veri_tipi": "varchar"}]) == []
-
-    def test_k_limit_enforced(self):
-        # Havuz kaç kayda büyürse büyüsün dönen örnek sayısı k'yı aşamaz (şişme garantisi)
-        for i in range(20):
-            decisions.save_decision(
-                {"kolon": f"tbl{i}IbanNo", "veri_tipi": "varchar"}, "onayla",
-                ana_kategori=5, kategoriler=[5],
-            )
-        found = decisions.similar_decisions(
-            [{"kolon": "yeniIbanNo", "veri_tipi": "varchar"}], k=8)
-        assert len(found) == 8
-
-    def test_zero_k_disables(self):
-        self._approve_iban()
-        assert decisions.similar_decisions(
-            [{"kolon": "klaIbanNo", "veri_tipi": "varchar"}], k=0) == []
-
-    def test_best_match_ranked_first(self):
-        self._approve_iban()
-        decisions.save_decision(
-            {"kolon": "eskiIbanKayitNo", "veri_tipi": "varchar"}, "onayla",
-            ana_kategori=5, kategoriler=[5],
-        )
-        found = decisions.similar_decisions([{"kolon": "klaIbanNo", "veri_tipi": "varchar"}])
-        assert found[0]["kolon"] == "mhIbanNo"  # 0.5'lik eşleşme 0.33'lükten önce
-
-
-class TestFewshotPrompt:
-    def test_examples_rendered_into_batch_prompt(self):
-        from classifier import prompts
-        ex = [{"kolon": "mhIbanNo", "veri_tipi": "varchar", "action": "onayla",
-               "kategoriler": [1, 5], "ana_kategori": 5}]
-        p = prompts.build_batch_prompt("dbo", "T", [{"kolon": "klaIbanNo"}], examples=ex)
-        assert "REFERANS ÖRNEKLER" in p
-        assert "mhIbanNo" in p and "bağlayıcı DEĞİL" in p
-
-    def test_no_examples_no_block(self):
-        from classifier import prompts
-        p = prompts.build_batch_prompt("dbo", "T", [{"kolon": "klaIbanNo"}])
-        assert "REFERANS ÖRNEKLER" not in p
-
-    @pytest.mark.asyncio
-    async def test_similar_decision_reaches_llm_prompt(self, monkeypatch):
-        # Onaylı mhIbanNo varken klaIbanNo sınıflandırılırsa: sözlükten DÖNMEZ
-        # (imza farklı) ama few-shot örneği olarak LLM prompt'una GİRER.
-        decisions.save_decision(
-            {"kolon": "mhIbanNo", "veri_tipi": "varchar"}, "onayla",
-            ana_kategori=5, kategoriler=[1, 5],
-        )
-        seen = {}
-
-        async def fake_chat(system, user, temperature=None):
-            seen["user"] = user
-            import json
-            return json.dumps([{"kolon": "klaIbanNo", "olasi_kategoriler": [5],
-                                "ana_kategori": 5, "teknik": False, "guven": 0.9,
-                                "gerekce": "t"}])
-
-        monkeypatch.setattr(llm, "chat", fake_chat)
-        row = {"sema": "s", "tablo": "KrediliAnlasma", "kolon": "klaIbanNo",
-               "veri_tipi": "varchar"}
-        results = await classify_rows([row], use_judge=False)
-        assert results[0]["kaynak"] == "llm"  # birebir imza değil, LLM karar verdi
-        assert "mhIbanNo" in seen["user"]     # ama insan kararı örnek olarak gösterildi
-        assert "REFERANS ÖRNEKLER" in seen["user"]
-
-    @pytest.mark.asyncio
-    async def test_benchmark_mode_gets_no_examples(self, monkeypatch):
-        decisions.save_decision(
-            {"kolon": "mhIbanNo", "veri_tipi": "varchar"}, "onayla",
-            ana_kategori=5, kategoriler=[1, 5],
-        )
-        seen = {}
-
-        async def fake_chat(system, user, temperature=None):
-            seen["user"] = user
-            import json
-            return json.dumps([{"kolon": "klaIbanNo", "olasi_kategoriler": [5],
-                                "ana_kategori": 5, "teknik": False, "guven": 0.9,
-                                "gerekce": "t"}])
-
-        monkeypatch.setattr(llm, "chat", fake_chat)
-        row = {"sema": "s", "tablo": "T", "kolon": "klaIbanNo", "veri_tipi": "varchar"}
-        await classify_rows([row], use_judge=False, mode="name_only")
-        assert "REFERANS ÖRNEKLER" not in seen["user"]
-
-    @pytest.mark.asyncio
-    async def test_use_examples_false_disables_fewshot_in_name_content(self, monkeypatch):
-        # Benchmark yolu: name_content olsa bile use_examples=False ise few-shot enjekte
-        # edilmez (curated banka golden ile örtüştüğünden sızıntıyı önler) ve display de
-        # eklenmez.
-        decisions.save_decision(
-            {"kolon": "mhIbanNo", "veri_tipi": "varchar"}, "onayla",
-            ana_kategori=5, kategoriler=[1, 5],
-        )
-        seen = {}
-
-        async def fake_chat(system, user, temperature=None):
-            seen["user"] = user
-            import json
-            return json.dumps([{"kolon": "klaIbanNo", "olasi_kategoriler": [5],
-                                "ana_kategori": 5, "teknik": False, "gerekce": "t"}])
-
-        monkeypatch.setattr(llm, "chat", fake_chat)
-        row = {"sema": "s", "tablo": "T", "kolon": "klaIbanNo", "veri_tipi": "varchar"}
-        results = await classify_rows(
-            [row], use_judge=False, mode="name_content", use_examples=False
-        )
-        assert "REFERANS ÖRNEKLER" not in seen["user"]
-        assert "benzer_ornekler" not in results[0]
-
-
 class TestPipelineIntegration:
     @pytest.mark.asyncio
     async def test_decided_row_bypasses_llm(self, monkeypatch):
@@ -245,6 +112,29 @@ class TestPipelineIntegration:
         monkeypatch.setattr(llm, "chat", fake_chat)
         results = await classify_rows([ROW], use_judge=False)
         assert called["n"] == 1  # nötr kayıt LLM'i atlatmaz
+        assert results[0]["kaynak"] == "llm"
+
+    @pytest.mark.asyncio
+    async def test_use_decisions_false_ignores_dictionary_in_name_content(self, monkeypatch):
+        # Benchmark, name_content modunu use_decisions=False ile koşar: karar sözlüğü
+        # birebir imza eşleşmesinde bile devreye GİRMEMELİ — yoksa benchmark modelin
+        # yeteneğini değil, insanın önceden verdiği cevabı ölçer.
+        decisions.save_decision(ROW, "onayla", ana_kategori=1, kategoriler=[1, 5])
+        called = {"n": 0}
+
+        async def fake_chat(system, user, temperature=None):
+            called["n"] += 1
+            import json
+            return json.dumps([{"kolon": "custTckn",
+                                "olasi_kategoriler": [{"id": 1, "olasilik": 0.9},
+                                                      {"id": 5, "olasilik": 0.1}],
+                                "ana_kategori": 1, "teknik": False, "gerekce": "t"}])
+
+        monkeypatch.setattr(llm, "chat", fake_chat)
+        results = await classify_rows(
+            [ROW], use_judge=False, mode="name_content", use_decisions=False
+        )
+        assert called["n"] == 1, "Sözlük imzası eşleşse bile LLM çağrılmalıydı"
         assert results[0]["kaynak"] == "llm"
 
     @pytest.mark.asyncio

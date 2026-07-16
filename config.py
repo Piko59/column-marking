@@ -4,14 +4,17 @@ from dotenv import load_dotenv
 
 load_dotenv()  # proje kökündeki .env dosyasını okur (yoksa sessizce geçer)
 
-QWEN_BASE_URL = os.getenv("QWEN_BASE_URL", "https://openrouter.ai/api/v1")
-QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen/qwen3.6-27b")
-QWEN_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+# LLM bağlantısı — OpenAI-uyumlu her uç ile çalışır (vLLM / Ollama / kurum içi gateway).
+# Kurum içi/yerel dağıtım varsayılır; URL ve anahtar .env'den doldurulur.
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.6-35")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 
-if not QWEN_API_KEY:
+if not LLM_BASE_URL or not LLM_API_KEY:
     raise RuntimeError(
-        "OPENROUTER_API_KEY tanımlı değil. .env.example dosyasını .env olarak kopyalayıp "
-        "API anahtarınızı girin (bkz. README)."
+        "LLM_BASE_URL ve/veya LLM_API_KEY tanımlı değil. .env.example dosyasını .env "
+        "olarak kopyalayıp kurum içi LLM ucunuzun adresini ve anahtarını girin "
+        "(anahtar istemeyen uçlar için LLM_API_KEY=dummy yeterlidir; bkz. README)."
     )
 
 # Pipeline ayarları
@@ -32,19 +35,14 @@ LLM_SEED = int(os.getenv("LLM_SEED", "7"))
 # Düşünen (reasoning) modellerde harcanacak düşünme bütçesi: low/medium/high veya "" (gönderme).
 # "low" hız için; başarı düşerse "medium"/"high" deneyin. Desteklemeyen modelde yok sayılır.
 REASONING_EFFORT = os.getenv("REASONING_EFFORT", "low")
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "120"))
+# OpenRouter'da tek bir batch çağrısının 100 saniyeyi aştığı gözlendi (paylaşımlı
+# barındarma, değişken kuyruk); 120s'lik eski varsayılan timeout+retry fırtınasına yol
+# açıyordu. Yerel vLLM'de çağrılar çok daha kısa sürer; istenirse .env'den düşürün.
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "300"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 CACHE_FILE = os.getenv("CACHE_FILE", "classification_cache.json")
 # İnsan inceleme kararlarının (onayla/düzelt/nötr) kalıcı sözlüğü.
 DECISIONS_FILE = os.getenv("DECISIONS_FILE", "review_decisions.json")
-# Few-shot: her LLM çağrısına, o partideki kolonlara en benzer en fazla K insan-onaylı
-# karar örnek olarak eklenir (0 = kapalı). Havuz ne kadar büyürse büyüsün prompt'a giren
-# miktar K ile sınırlıdır — şişme yapısal olarak engellenir.
-FEWSHOT_K = int(os.getenv("FEWSHOT_K", "8"))
-# Bu benzerliğin (token Jaccard) altındaki kararlar örnek olarak alınmaz — alakasız
-# örnek, örneksizden kötüdür.
-FEWSHOT_MIN_SIM = float(os.getenv("FEWSHOT_MIN_SIM", "0.3"))
-
 # Yüklenebilecek maksimum Excel boyutu (MB) — bellek koruması.
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
 # Ham veri tablosu yüklemede örnekleme: kolon başına kaç örnek değer, kaç satır taranır.

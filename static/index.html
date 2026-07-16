@@ -16,11 +16,15 @@
           <p>Veritabanı kolonlarının gizlilik kategorisi sınıflandırması</p>
         </div>
       </div>
-      <nav class="tabs" role="tablist">
-        <button class="tab active" data-tab="excel" role="tab">Excel Yükle</button>
-        <button class="tab" data-tab="single" role="tab">Tekil Sorgu</button>
-        <button class="tab" data-tab="benchmark" role="tab">Benchmark</button>
-      </nav>
+      <div class="topbar-actions">
+        <nav class="tabs" role="tablist">
+          <button class="tab active" data-tab="excel" role="tab">Excel Yükle</button>
+          <button class="tab" data-tab="single" role="tab">Tekil Sorgu</button>
+          <button class="tab" data-tab="benchmark" role="tab">Benchmark</button>
+        </nav>
+        <button id="themeToggle" class="theme-toggle" type="button"
+                aria-label="Temayı değiştir" title="Koyu temaya geç">☾</button>
+      </div>
     </div>
   </header>
 
@@ -76,7 +80,7 @@
             <option value="">Tüm durumlar</option>
             <option value="classified">Sınıflandırıldı</option>
             <option value="pending">Bekliyor</option>
-            <option value="lowconf">Düşük güven (&lt;0.6)</option>
+            <option value="lowconf">Düşük güven (&lt;0.75)</option>
             <option value="none">Kategorisiz</option>
             <option value="error">Hatalı</option>
           </select>
@@ -253,7 +257,7 @@
   </main>
 
   <footer class="footer">
-    <span>Aşama 1: kural analizi + toplu LLM &nbsp;·&nbsp; Aşama 2: düşük güvenlilere hakem geçişi &nbsp;·&nbsp; Her çalıştırmada yeniden değerlendirilir</span>
+    <span>Aşama 1: kural analizi + toplu LLM &nbsp;·&nbsp; Aşama 2: kararsız kolonlara hakem (güven &lt; 0.75 veya marj &lt; 0.25) &nbsp;·&nbsp; Her çalıştırmada yeniden değerlendirilir</span>
   </footer>
 
   <!-- Düzeltme paneli (Düzelt düğmesiyle açılır) -->

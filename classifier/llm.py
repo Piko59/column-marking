@@ -1,7 +1,7 @@
-"""OpenAI uyumlu chat-completions istemcisi (OpenRouter / vLLM / Ollama ile çalışır).
+"""OpenAI uyumlu chat-completions istemcisi (vLLM / Ollama / kurum içi gateway).
 
-Local modele geçiş: sadece QWEN_BASE_URL ve QWEN_MODEL ortam değişkenlerini değiştirin;
-vLLM ve Ollama aynı /chat/completions arayüzünü sunar.
+Uç değişikliği: yalnızca LLM_BASE_URL, LLM_MODEL ve LLM_API_KEY ortam değişkenlerini
+değiştirin; OpenAI-uyumlu her sağlayıcı aynı /chat/completions arayüzünü sunar.
 """
 
 import asyncio
@@ -34,9 +34,9 @@ def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
         _client = httpx.AsyncClient(
-            base_url=config.QWEN_BASE_URL,
+            base_url=config.LLM_BASE_URL,
             headers={
-                "Authorization": f"Bearer {config.QWEN_API_KEY}",
+                "Authorization": f"Bearer {config.LLM_API_KEY}",
                 "Content-Type": "application/json",
             },
             timeout=config.LLM_TIMEOUT,
@@ -67,7 +67,7 @@ async def chat(system: str, user: str, temperature: float | None = None) -> str:
     """
     _ensure_loop_bound()
     payload = {
-        "model": config.QWEN_MODEL,
+        "model": config.LLM_MODEL,
         "temperature": config.LLM_TEMPERATURE if temperature is None else temperature,
         "messages": [
             {"role": "system", "content": system},

@@ -37,7 +37,7 @@ ADIM 2 — OLASI KATEGORİLER (OLASILIK DAĞILIMI): Kolonun girebileceği TÜM k
   bu yüzden olasılıkları dürüstçe ver, yapay olarak birine şişirme.
 ADIM 3 — ANA KATEGORİ: Olasılık dağılımını bir kez daha analiz et ve EN UYGUN TEK
   kategoriyi "ana_kategori" olarak seç. Olasılıklar çok yakınsa (örn. 0.45 vs 0.40)
-  korunması en sıkı olanı seç; öncelik sırası: 2 > 3 > 7 > 5 > 4 > 6 > 1.
+  korunması en sıkı olanı seç; öncelik sırası: 2 > 3 > 5 > 4 > 6 > 7 > 1.
 NOT: "guven" alanı DÖNDÜRME — sistem, güveni olasılık dağılımından otomatik türetir.
 
 KARAR KURALLARI:
@@ -51,6 +51,12 @@ KARAR KURALLARI:
 - Tüzel kişi (şirket) verisi 1 veya 2 OLAMAZ; müşteri bağlamındaysa 5'tir.
 - Parola/PIN/kart verisi gibi kimlik doğrulama alanları tipik olarak 3 ve 7'ye girer
   (müşteriye aitse 5, banka sistemine/personeline aitse 6 da eklenir); ana kategori 3'tür.
+- 7 SAKLAMA BİÇİMİDİR, İÇERİK SINIFI DEĞİL: içerik sınıfı olan her kolonda ana kategori
+  içerik sınıfıdır (parola hash'i → ana 3; tokenize hesap no → ana 5; şifreleme
+  anahtarı → ana 6) ve 7 olası listede eşlik eder. Ana kategori 7'yi YALNIZCA içerik
+  sınıfı taşımayan saf kripto artefaktlarında seç (salt, IV, sertifika parmak izi).
+- Bankanın MÜŞTERİ hakkında ürettiği skor/istihbarat (kredi notu, risk derecesi, kara
+  liste) → 3 + 5; 6 DEĞİL. PERSONELE ait maaş/performans → 1 + 3; 4 DEĞİL.
 
 ÇIKTI FORMATI:
 SADECE geçerli bir JSON dizisi döndür; başka hiçbir metin, açıklama veya markdown yazma.
@@ -96,53 +102,13 @@ def _render_column_line(i: int, c: dict) -> str:
     return " | ".join(parts)
 
 
-_EXAMPLE_LABELS = {
-    "referans": "referans örnek",
-    "onayla": "insan onayladı",
-    "duzelt": "insan düzeltti",
-}
-
-
-def render_decision_examples(examples: list[dict] | None) -> list[str]:
-    """Benzer örnekleri (curated referans + insan onaylı kararlar) few-shot bloğu olarak
-    üretir (boşsa hiç üretmez).
-
-    Örnekler classifier.examples.retrieve ile o partideki kolonlara en benzer olacak
-    şekilde seçilir. Bilinçli olarak "yol gösterici, bağlayıcı değil" çerçevesinde verilir:
-    insan kararının güven=1.0 ağırlığı yalnız BİREBİR imza eşleşmesinde (karar sözlüğü,
-    pipeline'da LLM'den önce) uygulanır; benzer-ama-farklı kolonda model, örneği ve
-    gerekçesini görüp kendi kararını verir. Örnek sayısı config.FEWSHOT_K ile sınırlı —
-    prompt şişmez.
-    """
-    if not examples:
-        return []
-    lines = [
-        "REFERANS ÖRNEKLER (benzer kolonların doğru sınıflandırması — yol gösterici, "
-        "bağlayıcı DEĞİL; kolonun tablosu/bağlamı farklıysa kendi kararını ver):",
-    ]
-    for ex in examples:
-        label = _EXAMPLE_LABELS.get(ex.get("kaynak") or ex.get("action"), "örnek")
-        dtype = f" ({ex['veri_tipi']})" if ex.get("veri_tipi") else ""
-        teknik = " [teknik]" if ex.get("teknik") else ""
-        gerekce = f" — {ex['gerekce']}" if ex.get("gerekce") else ""
-        lines.append(
-            f"- {ex.get('kolon', '?')}{dtype}: olası kategoriler={ex.get('kategoriler')}, "
-            f"ana kategori={ex.get('ana_kategori')}{teknik} [{label}]{gerekce}"
-        )
-    lines.append("")
-    return lines
-
-
-def build_batch_prompt(
-    schema: str, table: str, columns: list[dict], examples: list[dict] | None = None
-) -> str:
+def build_batch_prompt(schema: str, table: str, columns: list[dict]) -> str:
     """Bir tabloya ait kolon grubu için kullanıcı prompt'u.
 
     columns: [{kolon, veri_tipi, uzunluk, nullable, pk, note, hints, ornek_degerler}, ...]
     ornek_degerler verilmişse ham olarak LLM'e gönderilir (yerel ortam, maskeleme yok).
-    examples: decisions.similar_decisions çıktısı — insan onaylı few-shot örnekleri.
     """
-    lines = render_decision_examples(examples) + [
+    lines = [
         f"ŞEMA: {schema or '-'}",
         f"TABLO: {table or '-'}",
         "",
@@ -158,9 +124,7 @@ def build_batch_prompt(
     return "\n".join(lines)
 
 
-def build_multi_table_prompt(
-    table_groups: list[tuple[str, str, list[dict]]], examples: list[dict] | None = None
-) -> str:
+def build_multi_table_prompt(table_groups: list[tuple[str, str, list[dict]]]) -> str:
     """Birden fazla KÜÇÜK tabloyu TEK istekte birleştirir (toplam kolon sayısı
     config.BATCH_SIZE sınırına kadar) — çağrı sayısını azaltıp gecikmeyi düşürmek için.
 
@@ -171,7 +135,7 @@ def build_multi_table_prompt(
     doğru tabloya eşlemesini (isim çakışması olsa bile) sağlar.
     """
     total = sum(len(cols) for _, _, cols in table_groups)
-    lines = render_decision_examples(examples) + [
+    lines = [
         f"Bu istekte {len(table_groups)} farklı tabloya ait kolon grubu var (toplam {total} "
         "kolon). Her bölümü YALNIZ kendi ŞEMA/TABLO bağlamıyla değerlendir; tablolar "
         "arasındaki kolonları birbirine karıştırma.",
@@ -204,7 +168,7 @@ KURALLAR:
   açılım uydurma (acilim=null); veri tipi ve bağlamdan yürü.
 - Olası kategorileri OLASILIK DAĞILIMI olarak belirle (toplam 1.0, %1'in altı listelenmez),
   sonra bir kez daha analiz ederek EN UYGUN TEK ana kategoriyi seç. Eşitlik hâlinde
-  öncelik: 2 > 3 > 7 > 5 > 4 > 6 > 1.
+  öncelik: 2 > 3 > 5 > 4 > 6 > 7 > 1.
 - Teknik/işlemsel kolonsa "teknik": true yaz ve en yakın kategoriyi ana kategori yap.
 - Kategori 2 varsa 1'i de ekle; tüzel kişi verisi 1/2 olamaz; müşteri bilgisi 5'tir.
 - Kolon adı anlamsız/anonimleştirilmiş görünüyorsa (örn. "col_a1b2c3") isimden açılım

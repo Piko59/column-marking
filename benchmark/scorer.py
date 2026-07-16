@@ -100,7 +100,9 @@ def _aggregate(metrics: list[dict]) -> dict:
         "teknik_accuracy": round(sum(m["teknik_match"] for m in metrics) / n, 4),
         "avg_confidence": round(sum(m["confidence"] for m in metrics) / n, 4),
         "error_rate": round(sum(m["error"] for m in metrics) / n, 4),
-        "judge_rate": round(sum(1 for m in metrics if m["kaynak"] == "llm+hakem") / n, 4),
+        # startswith: hem kabul edilen ("llm+hakem") hem reddedilen ("llm+hakem_ret")
+        # hakem denemeleri sayılır — metrik "hakeme giden kolon oranı"dır, kabul oranı değil.
+        "judge_rate": round(sum(1 for m in metrics if str(m["kaynak"]).startswith("llm+hakem")) / n, 4),
         **_calibration(metrics),
     }
 
@@ -160,11 +162,11 @@ async def run_benchmark(
 
     async def run_mode(mode: str) -> tuple[str, list[dict]]:
         nonlocal completed
-        # use_examples=False: curated örnek bankası golden veri setiyle kavramsal olarak
-        # örtüştüğünden, few-shot açık bırakılsa benchmark modelin ham yeteneğini değil
-        # örnek sızıntısını ölçerdi (bkz. classify_rows docstring).
+        # use_decisions=False: karar sözlüğü golden veri setiyle örtüşebilir; açık
+        # bırakılsa benchmark modelin ham yeteneğini değil, insanın önceden verdiği
+        # cevapların sızıntısını ölçerdi (bkz. classify_rows docstring).
         results = await classify_rows(
-            rows, use_judge=use_judge, mode=mode, use_examples=False
+            rows, use_judge=use_judge, mode=mode, use_decisions=False
         )
         if progress_cb:
             async with progress_lock:
