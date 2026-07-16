@@ -78,6 +78,11 @@ kolonlar en yakın kategoriye bağlanıp `teknik=1` işaretlenir. Önbellek vars
 Hakem geçişi arayüzden kapatılabilir. Eşikler `config.py` içinde
 (`BATCH_SIZE`, `JUDGE_THRESHOLD`, hız için `REASONING_EFFORT=low`).
 
+**Tekil sorgu = derin analiz:** Tek kolon sorgulanırken zaman kritik olmadığından
+düşünme bütçesi `SINGLE_REASONING_EFFORT`'a (varsayılan `high`) yükselir ve hakem
+geçişi açık çalışır. Aynı kolon toplu koşuda farklı sonuç verebilir — tekil sorgu
+bilinçli olarak daha özenli ikinci görüştür.
+
 **Hız:** Gecikme büyük ölçüde çağrı başına sabit bir model gecikmesinden gelir (kolon
 sayısından değil), bu yüzden iki paralellik ekseni var: küçük tablolar `BATCH_SIZE`'a
 kadar TEK çağrıda birleştirilir (her biri kendi ŞEMA/TABLO bölümünde, bağlam karışmaz —

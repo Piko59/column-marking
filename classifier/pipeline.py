@@ -196,11 +196,13 @@ def _error_result(column_name: str, msg: str) -> dict:
 
 # --- Aşamalar ----------------------------------------------------------------
 
-async def _classify_group(schema: str, table: str, cols: list[dict]) -> list[dict]:
+async def _classify_group(
+    schema: str, table: str, cols: list[dict], reasoning_effort: str | None = None,
+) -> list[dict]:
     """Aşama 1: bir tablonun kolon grubunu tek çağrıda sınıflandırır."""
     user_prompt = prompts.build_batch_prompt(schema, table, cols)
     try:
-        raw = await llm.chat(prompts.SYSTEM_PROMPT, user_prompt)
+        raw = await llm.chat(prompts.SYSTEM_PROMPT, user_prompt, reasoning_effort=reasoning_effort)
         parsed = llm.extract_json(raw)
         if isinstance(parsed, dict):
             parsed = [parsed]
@@ -227,7 +229,7 @@ async def _classify_group(schema: str, table: str, cols: list[dict]) -> list[dic
 
 
 async def _classify_multi_group(
-    table_groups: list[tuple[str, str, list[dict]]],
+    table_groups: list[tuple[str, str, list[dict]]], reasoning_effort: str | None = None,
 ) -> list[dict]:
     """Aşama 1 (çoklu tablo): birden fazla KÜÇÜK tabloyu tek çağrıda sınıflandırır.
 
@@ -239,7 +241,7 @@ async def _classify_multi_group(
     all_cols = [c for _, _, cols in table_groups for c in cols]
     user_prompt = prompts.build_multi_table_prompt(table_groups)
     try:
-        raw = await llm.chat(prompts.SYSTEM_PROMPT, user_prompt)
+        raw = await llm.chat(prompts.SYSTEM_PROMPT, user_prompt, reasoning_effort=reasoning_effort)
         parsed = llm.extract_json(raw)
         if isinstance(parsed, dict):
             parsed = [parsed]
@@ -310,7 +312,10 @@ def _pack_into_superbatches(
     return superbatches
 
 
-async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
+async def _judge(
+    schema: str, table: str, col: dict, first_pass: dict,
+    reasoning_effort: str | None = None,
+) -> dict:
     """Aşama 2: olasılık dağılımı belirsiz kolon için hakem geçişi.
 
     Hakemin güveni (en yüksek sınıf olasılığı) ilk denemenin güveninden düşükse İLK
@@ -324,6 +329,7 @@ async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
         raw = await llm.chat(
             prompts.JUDGE_SYSTEM_PROMPT,
             prompts.build_judge_prompt(schema, table, col, first_pass),
+            reasoning_effort=reasoning_effort,
         )
         parsed = llm.extract_json(raw)
         if isinstance(parsed, list):
@@ -356,7 +362,7 @@ async def _judge(schema: str, table: str, col: dict, first_pass: dict) -> dict:
 
 async def classify_rows(
     rows: list[dict], use_judge: bool = True, mode: str = "name_content",
-    use_decisions: bool = True,
+    use_decisions: bool = True, reasoning_effort: str | None = None,
 ) -> list[dict]:
     """Satır listesini sınıflandırır; giriş sırasıyla aynı sırada sonuç döndürür.
 
@@ -374,6 +380,8 @@ async def classify_rows(
           örtüşebilir; açık bırakılırsa benchmark modelin ham yeteneğini değil, insanın
           önceden verdiği cevapların sızıntısını ölçer. İkisi de yalnız name_content
           modunda zaten etkindir (name_only/content_only sinyal izole eder).
+    reasoning_effort: bu koşudaki TÜM LLM çağrılarının (batch + hakem) düşünme bütçesi;
+          None → config.REASONING_EFFORT. Tekil sorgu "high" ile çağırır (derin analiz).
     """
     if mode not in VALID_MODES:
         raise ValueError(f"Geçersiz mode: {mode!r}; beklenen: {VALID_MODES}")
@@ -430,10 +438,10 @@ async def classify_rows(
         if len(sb) == 1:
             (schema, table), chunk = sb[0]
             cols = [c for _, c in chunk]
-            group_results = await _classify_group(schema, table, cols)
+            group_results = await _classify_group(schema, table, cols, reasoning_effort)
         else:
             table_groups = [(gk[0], gk[1], [c for _, c in chunk]) for gk, chunk in sb]
-            group_results = await _classify_multi_group(table_groups)
+            group_results = await _classify_multi_group(table_groups, reasoning_effort)
             chunk = [pair for _, items in sb for pair in items]
 
         # 4: hakem geçişi — İKİ BAĞIMSIZ TETİKLEYİCİ (biri yeterli):
@@ -458,7 +466,10 @@ async def classify_rows(
                 if not (low_conf or tight_margin):
                     continue
                 _, col = chunk[j]
-                judge_tasks.append((j, _judge(str(col.get("sema", "")), str(col.get("tablo", "")), col, res)))
+                judge_tasks.append((j, _judge(
+                    str(col.get("sema", "")), str(col.get("tablo", "")), col, res,
+                    reasoning_effort,
+                )))
             if judge_tasks:
                 judged = await asyncio.gather(*(t for _, t in judge_tasks))
                 for (j, _), new_res in zip(judge_tasks, judged):

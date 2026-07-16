@@ -571,18 +571,19 @@ $("singleForm").addEventListener("submit", async (e) => {
     .split(/[;|\n]+/).map((s) => s.trim()).filter(Boolean).slice(0, 10);
   delete row.ornek_degerler_raw;
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span>Sınıflandırılıyor…';
+  btn.innerHTML = '<span class="spinner"></span>Derin analiz yapılıyor…';
   try {
     // Kural analizi ve LLM sınıflandırmasını paralel çalıştır
     const jsonOpts = (body) => ({
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
-    // Tekil sorguda hakem KAPALI: ilk cevap tek çağrıda hızlı döner. Emin kolonlar
-    // zaten hakem tetiklemezdi; belirsiz kolonlar düşük güven ile işaretlenir (güven
-    // sütununa bak). Toplu tabloda hakem, sağ üstteki anahtardan yönetilir.
+    // Tekil sorgu = DERİN ANALİZ modu: tek kolonda gecikme önemsiz, özen önemli.
+    // deep: true → düşünme bütçesi yükselir (SINGLE_REASONING_EFFORT, vars. high);
+    // hakem AÇIK → belirsiz kolonlara ikinci bağımsız görüş alınır. Toplu tablo
+    // hızlı profilde kalır (REASONING_EFFORT=low + eşikli hakem).
     const [analysisResp, classifyResp] = await Promise.all([
       api("/api/analyze", jsonOpts(row)),
-      api("/api/classify", jsonOpts({ rows: [row], use_judge: false })),
+      api("/api/classify", jsonOpts({ rows: [row], use_judge: true, deep: true })),
     ]);
     const analysis = await analysisResp.json();
     const result = (await classifyResp.json()).results[0];

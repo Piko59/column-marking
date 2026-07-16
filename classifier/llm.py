@@ -62,11 +62,16 @@ def _get_semaphore() -> asyncio.Semaphore:
     return _concurrency_sem
 
 
-async def chat(system: str, user: str, temperature: float | None = None) -> str:
+async def chat(
+    system: str, user: str, temperature: float | None = None,
+    reasoning_effort: str | None = None,
+) -> str:
     """Tek chat çağrısı; geçici hatalarda üstel bekleme ile yeniden dener.
 
     Tekrarlanabilirlik için varsayılan temperature=0 ve (sağlayıcı destekliyorsa) sabit
     "seed" gönderilir — aynı girdiye aynı çıktı denetim/benchmark için önemlidir.
+    reasoning_effort verilirse config.REASONING_EFFORT'u bu çağrı için ezer (tekil
+    sorgunun derin analiz modu bunu "high" ile çağırır; toplu koşu varsayılanda kalır).
     """
     _ensure_loop_bound()
     payload = {
@@ -77,8 +82,9 @@ async def chat(system: str, user: str, temperature: float | None = None) -> str:
             {"role": "user", "content": user},
         ],
     }
-    if config.REASONING_EFFORT in ("low", "medium", "high"):
-        payload["reasoning"] = {"effort": config.REASONING_EFFORT}
+    effort = reasoning_effort or config.REASONING_EFFORT
+    if effort in ("low", "medium", "high"):
+        payload["reasoning"] = {"effort": effort}
     if config.LLM_SEED is not None:
         payload["seed"] = config.LLM_SEED
     # Sağlayıcı bu opsiyonel alanlardan birini desteklemiyorsa 400 döner; sırayla

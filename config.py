@@ -38,6 +38,9 @@ LLM_SEED = int(os.getenv("LLM_SEED", "7"))
 # Düşünen (reasoning) modellerde harcanacak düşünme bütçesi: low/medium/high veya "" (gönderme).
 # "low" hız için; başarı düşerse "medium"/"high" deneyin. Desteklemeyen modelde yok sayılır.
 REASONING_EFFORT = os.getenv("REASONING_EFFORT", "low")
+# Tekil sorgunun DERİN ANALİZ modu: tek kolon incelenirken zaman kritik değildir,
+# düşünme bütçesi yükseltilir (+ arayüz hakemi de açar). Toplu koşu REASONING_EFFORT'ta kalır.
+SINGLE_REASONING_EFFORT = os.getenv("SINGLE_REASONING_EFFORT", "high")
 # OpenRouter'da tek bir batch çağrısının 100 saniyeyi aştığı gözlendi (paylaşımlı
 # barındarma, değişken kuyruk); 120s'lik eski varsayılan timeout+retry fırtınasına yol
 # açıyordu. Yerel vLLM'de çağrılar çok daha kısa sürer; istenirse .env'den düşürün.

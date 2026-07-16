@@ -102,7 +102,7 @@ class TestPipelineIntegration:
         decisions.save_decision(ROW, "notr")
         called = {"n": 0}
 
-        async def fake_chat(system, user, temperature=None):
+        async def fake_chat(system, user, temperature=None, reasoning_effort=None):
             called["n"] += 1
             import json
             return json.dumps([{"kolon": "custTckn", "olasi_kategoriler": [1],
@@ -122,7 +122,7 @@ class TestPipelineIntegration:
         decisions.save_decision(ROW, "onayla", ana_kategori=1, kategoriler=[1, 5])
         called = {"n": 0}
 
-        async def fake_chat(system, user, temperature=None):
+        async def fake_chat(system, user, temperature=None, reasoning_effort=None):
             called["n"] += 1
             import json
             return json.dumps([{"kolon": "custTckn",
@@ -143,7 +143,7 @@ class TestPipelineIntegration:
         decisions.save_decision(ROW, "onayla", ana_kategori=1, kategoriler=[1])
         called = {"n": 0}
 
-        async def fake_chat(system, user, temperature=None):
+        async def fake_chat(system, user, temperature=None, reasoning_effort=None):
             called["n"] += 1
             import json
             return json.dumps([{"kolon": "x", "olasi_kategoriler": [1], "ana_kategori": 1,

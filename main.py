@@ -167,6 +167,9 @@ class ClassifyRequest(BaseModel):
     rows: list[RowIn] = Field(..., max_length=MAX_ROWS_PER_REQUEST)
     use_judge: bool = True
     mode: str = "name_content"  # "name_only" | "content_only" | "name_content"
+    # Derin analiz modu (tekil sorgu): düşünme bütçesi SINGLE_REASONING_EFFORT'a
+    # yükselir — tek kolonda gecikme önemsiz, özen önemli. Toplu koşu False gönderir.
+    deep: bool = False
 
 
 class ExportRow(BaseModel):
@@ -292,13 +295,18 @@ async def upload_data_table(file: UploadFile = File(...)):
 
 @app.post("/api/classify")
 async def classify(req: ClassifyRequest):
-    """Satır grubunu sınıflandırır. Frontend büyük dosyaları parça parça gönderir."""
+    """Satır grubunu sınıflandırır. Frontend büyük dosyaları parça parça gönderir.
+
+    deep=True (tekil sorgu) tüm çağrıların düşünme bütçesini SINGLE_REASONING_EFFORT'a
+    yükseltir; toplu koşu config.REASONING_EFFORT'ta (hız) kalır.
+    """
     if not req.rows:
         raise HTTPException(400, "Satır listesi boş.")
     if req.mode not in ("name_only", "content_only", "name_content"):
         raise HTTPException(400, "Geçersiz mode.")
     results = await classify_rows(
-        [r.model_dump() for r in req.rows], use_judge=req.use_judge, mode=req.mode
+        [r.model_dump() for r in req.rows], use_judge=req.use_judge, mode=req.mode,
+        reasoning_effort=config.SINGLE_REASONING_EFFORT if req.deep else None,
     )
     return {"results": results}
 

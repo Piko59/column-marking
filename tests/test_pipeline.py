@@ -14,6 +14,48 @@ from classifier.pipeline import (
 )
 
 
+class TestReasoningEffortPassthrough:
+    """Derin analiz modu: classify_rows(reasoning_effort=...) hem batch hem hakem
+    çağrısına aynen ulaşmalı; verilmezse None kalmalı (llm.chat config'e düşer)."""
+
+    @staticmethod
+    def _fake_chat(efforts):
+        async def fake_chat(system, user, temperature=None, reasoning_effort=None):
+            import json
+            efforts.append(reasoning_effort)
+            if len(efforts) == 1:  # batch: yayvan dağılım (marj=0.05) → hakem tetiklenir
+                return json.dumps([{
+                    "kolon": "x", "acilim": "",
+                    "olasi_kategoriler": [{"id": 5, "olasilik": 0.50}, {"id": 4, "olasilik": 0.45}],
+                    "ana_kategori": 5, "teknik": False, "gerekce": "belirsiz",
+                }])
+            return json.dumps({
+                "olasi_kategoriler": [{"id": 5, "olasilik": 0.90}, {"id": 4, "olasilik": 0.10}],
+                "ana_kategori": 5, "teknik": False, "gerekce": "hakem",
+            })
+        return fake_chat
+
+    @pytest.mark.asyncio
+    async def test_deep_effort_reaches_batch_and_judge(self, monkeypatch):
+        efforts: list = []
+        monkeypatch.setattr(llm, "chat", self._fake_chat(efforts))
+        await classify_rows(
+            [{"kolon": "x", "tablo": "T", "sema": "s", "veri_tipi": "varchar"}],
+            use_judge=True, mode="name_only", reasoning_effort="high",
+        )
+        assert efforts == ["high", "high"]
+
+    @pytest.mark.asyncio
+    async def test_default_effort_stays_none(self, monkeypatch):
+        efforts: list = []
+        monkeypatch.setattr(llm, "chat", self._fake_chat(efforts))
+        await classify_rows(
+            [{"kolon": "x", "tablo": "T", "sema": "s", "veri_tipi": "varchar"}],
+            use_judge=True, mode="name_only",
+        )
+        assert efforts == [None, None]
+
+
 class TestCacheKey:
     def test_composes_schema_table_column_type(self):
         row = {"sema": "dbo", "tablo": "Customer", "kolon": "Ad", "veri_tipi": "varchar"}
@@ -197,7 +239,7 @@ class TestJudgeAcceptance:
     async def test_rejects_hakem_when_confidence_drops(self, monkeypatch):
         # İlk denemede güven (en yüksek olasılık) 0.72, hakem 0.55 dönüyor —
         # ilk sonuç korunur, kaynak "llm+hakem_ret".
-        async def fake_chat(system, user, temperature=None):
+        async def fake_chat(system, user, temperature=None, reasoning_effort=None):
             import json
             return json.dumps({
                 "acilim": None,
@@ -222,7 +264,7 @@ class TestJudgeAcceptance:
     @pytest.mark.asyncio
     async def test_accepts_hakem_when_confidence_rises(self, monkeypatch):
         # İlk 0.55, hakem 0.85 — hakem sonucu kabul edilir, kaynak "llm+hakem".
-        async def fake_chat(system, user, temperature=None):
+        async def fake_chat(system, user, temperature=None, reasoning_effort=None):
             import json
             return json.dumps({
                 "acilim": None,
@@ -256,7 +298,7 @@ class TestJudgeTrigger:
         # önler). Kolon guven=0 ile işaretlenir, insan incelemesine düşer.
         chat_calls: list[str] = []
 
-        async def fake_chat(system, user, temperature=None):
+        async def fake_chat(system, user, temperature=None, reasoning_effort=None):
             chat_calls.append(system)
             import json
             return json.dumps([{
@@ -280,7 +322,7 @@ class TestJudgeTrigger:
         # birini kesin seçmiş, diğerleri sadece ihtimal dahilinde.
         chat_calls: list[str] = []
 
-        async def fake_chat(system, user, temperature=None):
+        async def fake_chat(system, user, temperature=None, reasoning_effort=None):
             chat_calls.append(system)
             import json
             return json.dumps([{
@@ -306,7 +348,7 @@ class TestJudgeTrigger:
         # 2 olası kategori + keskin olasılık (marj=0.90) — hakem tetiklenmemeli.
         chat_calls: list[str] = []
 
-        async def fake_chat(system, user, temperature=None):
+        async def fake_chat(system, user, temperature=None, reasoning_effort=None):
             chat_calls.append(system)
             import json
             return json.dumps([{
@@ -332,7 +374,7 @@ class TestJudgeTrigger:
         # iki kategori arasında gerçekten kararsız. Hakem tetiklenmeli.
         chat_calls: list[str] = []
 
-        async def fake_chat(system, user, temperature=None):
+        async def fake_chat(system, user, temperature=None, reasoning_effort=None):
             chat_calls.append(system)
             import json
             if len(chat_calls) == 1:
@@ -367,7 +409,7 @@ class TestJudgeTrigger:
         # (Marj-only mantıkta bu kolon sessizce kabul edilirdi — yeni iki-sinyal tasarımı yakalar.)
         chat_calls: list[str] = []
 
-        async def fake_chat(system, user, temperature=None):
+        async def fake_chat(system, user, temperature=None, reasoning_effort=None):
             chat_calls.append(system)
             import json
             if len(chat_calls) == 1:
@@ -398,7 +440,7 @@ class TestJudgeTrigger:
         # "teknik=true" olan kolon düşük güvende bile hakeme gitmez (hız için kritik).
         chat_calls: list[str] = []
 
-        async def fake_chat(system, user, temperature=None):
+        async def fake_chat(system, user, temperature=None, reasoning_effort=None):
             chat_calls.append(system)
             import json
             return json.dumps([{
@@ -490,7 +532,7 @@ class TestClassifyMultiGroup:
     async def test_disambiguates_same_column_name_across_tables_by_table_field(self, monkeypatch):
         # İki farklı tabloda AYNI isimde kolon var ("id"); model her ikisini de farklı
         # kategoriyle dönüyor ve "tablo" alanıyla hangisinin hangisi olduğunu belirtiyor.
-        async def fake_chat(system, user, temperature=None):
+        async def fake_chat(system, user, temperature=None, reasoning_effort=None):
             import json
             return json.dumps([
                 {"tablo": "TabloA", "kolon": "id", "olasi_kategoriler": [5], "ana_kategori": 5,
@@ -511,7 +553,7 @@ class TestClassifyMultiGroup:
 
     @pytest.mark.asyncio
     async def test_llm_failure_returns_error_for_every_column(self, monkeypatch):
-        async def failing_chat(system, user, temperature=None):
+        async def failing_chat(system, user, temperature=None, reasoning_effort=None):
             raise RuntimeError("boom")
 
         monkeypatch.setattr(llm, "chat", failing_chat)

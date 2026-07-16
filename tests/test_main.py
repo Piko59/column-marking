@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 
+import config
 import main
 from main import _cell, _infer_type, _map_headers, _norm_header, _split_samples
 
@@ -195,6 +196,38 @@ class TestUploadExportNewFormat:
         assert values[12] == "TR56"
         ana_idx = headers.index("Ana Kategori")
         assert values[ana_idx] == "5. Müşteri Sırrı"
+
+
+class TestClassifyDeepMode:
+    """deep=True (tekil sorgu) SINGLE_REASONING_EFFORT'u pipeline'a geçirmeli;
+    toplu koşu (deep verilmez) None geçmeli — llm.chat config varsayılanına düşer."""
+
+    def _capture(self, monkeypatch):
+        captured = {}
+
+        async def fake_classify_rows(rows, use_judge=True, mode="name_content",
+                                     reasoning_effort=None):
+            captured["reasoning_effort"] = reasoning_effort
+            captured["use_judge"] = use_judge
+            return [{"kolon": r["kolon"], "kategoriler": []} for r in rows]
+
+        monkeypatch.setattr(main, "classify_rows", fake_classify_rows)
+        return captured
+
+    def test_deep_true_uses_single_reasoning_effort(self, monkeypatch):
+        captured = self._capture(monkeypatch)
+        client = TestClient(main.app)
+        resp = client.post("/api/classify",
+                           json={"rows": [{"kolon": "mhIbanNo"}], "use_judge": True, "deep": True})
+        assert resp.status_code == 200
+        assert captured["reasoning_effort"] == config.SINGLE_REASONING_EFFORT == "high"
+
+    def test_bulk_default_passes_none(self, monkeypatch):
+        captured = self._capture(monkeypatch)
+        client = TestClient(main.app)
+        resp = client.post("/api/classify", json={"rows": [{"kolon": "mhIbanNo"}]})
+        assert resp.status_code == 200
+        assert captured["reasoning_effort"] is None
 
 
 class TestInferType:
