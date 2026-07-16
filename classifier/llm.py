@@ -40,6 +40,9 @@ def _get_client() -> httpx.AsyncClient:
                 "Content-Type": "application/json",
             },
             timeout=config.LLM_TIMEOUT,
+            # Kurum içi uçların sertifikası (kurum CA'sı / self-signed) varsayılan güven
+            # deposunda yoktur; LLM_VERIFY_SSL=0 doğrulamayı kapatır (izole kurum ağı).
+            verify=config.LLM_VERIFY_SSL,
         )
     return _client
 

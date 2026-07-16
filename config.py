@@ -9,6 +9,9 @@ load_dotenv()  # proje kökündeki .env dosyasını okur (yoksa sessizce geçer)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.6-35")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+# Kurum içi HTTPS uçlarında sertifika doğrulaması: "0" yapılırsa kapanır — kurum
+# CA'lı/self-signed sertifikalı uçlar için gereklidir (yalnız izole kurum ağında).
+LLM_VERIFY_SSL = os.getenv("LLM_VERIFY_SSL", "1") != "0"
 
 if not LLM_BASE_URL or not LLM_API_KEY:
     raise RuntimeError(
