@@ -43,19 +43,32 @@ KARAR KURALLARI:
 - Her kolona en az bir olası kategori ve mutlaka bir ana kategori ata. Hiçbir kategori
   açıkça uymuyorsa (satır no, durum kodu, işlem/süreç kodu, versiyon, tarih damgası gibi
   teknik/işlemsel kolonlar) "teknik": true yaz ve EN YAKIN kategoriyi ana kategori seç.
+  "teknik": true YALNIZCA sınıflandırılabilir içeriği OLMAYAN işlemsel kolonlar içindir:
+  satır versiyonu (rowversion), oluşturma/güncelleme zaman damgası, durum/işlem tipi kodu,
+  sıra no, batch no, uygulama versiyonu. ŞİFRELİ/HASH'Lİ/TOKENİZE veya kriptografik alanlar
+  (parola hash, PIN blok, CVV, OTP, salt, sertifika parmak izi, şifreleme anahtarı, API
+  secret) TEKNİK DEĞİLDİR — bir kategori (7 ve/veya içerik sınıfı) taşırlar → "teknik": false.
 - Kategori 2 olası listede varsa 1'i de ekle. Kategori 2 listesi sınırlı sayıdadır (KVKK
   m.6); listede olmayanı 2 yapma.
-- Müşteri tablolarındaki gerçek kişi kimlik/iletişim bilgileri hem 1 hem 5'tir
-  (kişinin banka müşterisi olduğunu gösteren her bilgi müşteri sırrıdır).
+- Müşteri tablolarındaki gerçek kişi kimlik/iletişim/hesap bilgilerinde ANA KATEGORİ 5'tir
+  (Müşteri Sırrı), 1 (Kişisel Veri) eşlik eder. Gerekçe: 5411 s.K. m.73 ÖZEL kanun, KVKK
+  GENEL kanundur; çakışmada özel kanun önceliklidir (lex specialis) ve müşteri sırrı daha
+  sıkı rejimdir (açık rızayla bile aktarılamaz). Kişinin banka müşterisi olduğunu gösteren
+  HER bilgi müşteri sırrıdır. UYARI: Bu YALNIZ müşteri içindir — personel/çalışan gibi
+  müşteri OLMAYAN gerçek kişilerde 5 KULLANMA; onlarda ana 1 (ekonomik/hassas ise 3).
 - Tüzel kişi (şirket) verisi 1 veya 2 OLAMAZ; müşteri bağlamındaysa 5'tir.
 - Parola/PIN/kart verisi gibi kimlik doğrulama alanları tipik olarak 3 ve 7'ye girer
   (müşteriye aitse 5, banka sistemine/personeline aitse 6 da eklenir); ana kategori 3'tür.
 - 7 SAKLAMA BİÇİMİDİR, İÇERİK SINIFI DEĞİL: içerik sınıfı olan her kolonda ana kategori
   içerik sınıfıdır (parola hash'i → ana 3; tokenize hesap no → ana 5; şifreleme
   anahtarı → ana 6) ve 7 olası listede eşlik eder. Ana kategori 7'yi YALNIZCA içerik
-  sınıfı taşımayan saf kripto artefaktlarında seç (salt, IV, sertifika parmak izi).
+  sınıfı taşımayan saf kripto artefaktlarında seç (salt, IV, nonce, sertifika parmak izi).
+- "secret/key/anahtar" ADI otomatik olarak 7 YAPMAZ: şifreleme anahtarı, API secret, özel
+  anahtar, sistem/servis parolası bir SİSTEM SIRRIDIR → ana 6 (+7 eşlik eder). Bunları ana
+  7 YAPMA; ana 7 yalnız salt/IV/nonce/sertifika parmak izi gibi içeriksiz artefaktlar içindir.
 - Bankanın MÜŞTERİ hakkında ürettiği skor/istihbarat (kredi notu, risk derecesi, kara
-  liste) → 3 + 5; 6 DEĞİL. PERSONELE ait maaş/performans → 1 + 3; 4 DEĞİL.
+  liste) → 3 + 5; 6 DEĞİL. PERSONELE ait maaş/performans → 3 + 1 (ana 3); 4 DEĞİL, 5 DEĞİL
+  (personel müşteri değildir).
 
 ÇIKTI FORMATI:
 SADECE geçerli bir JSON dizisi döndür; başka hiçbir metin, açıklama veya markdown yazma.
@@ -71,11 +84,12 @@ tablo birleştirilmiş demektir), her nesneye ayrıca "tablo": "<o bölümün ta
 — bu, hangi sonucun hangi tabloya ait olduğunu netleştirir. TABLOLAR ARASINDAKİ KOLONLARI
 BİRBİRİNE KARIŞTIRMA; her bölümü yalnız kendi ŞEMA/TABLO bağlamıyla değerlendir.
 
-ÖRNEK — TABLO: CustomerCard için girdi kolonları ccCardNo, ccCvvEnc, ccTaxNo, ccMarginRate, ccRowVer:
+ÖRNEK — TABLO: CustomerCard için girdi kolonları ccCardNo, ccCvvEnc, ccTaxNo, ccMarginRate, ccDataKeyRef, ccRowVer:
 [{{"kolon":"ccCardNo","acilim":"Customer Card - Card Number","olasi_kategoriler":[{{"id":3,"olasilik":0.70}},{{"id":5,"olasilik":0.20}},{{"id":7,"olasilik":0.10}}],"ana_kategori":3,"teknik":false,"gerekce":"Kart numarası (PAN) BDDK'ya göre hassas veridir; müşteri sırrıdır ve şifreli saklanması gerekir, ana kategori hassas veridir."}},
 {{"kolon":"ccCvvEnc","acilim":"Customer Card - CVV (Encrypted)","olasi_kategoriler":[{{"id":3,"olasilik":0.60}},{{"id":7,"olasilik":0.35}},{{"id":5,"olasilik":0.05}}],"ana_kategori":3,"teknik":false,"gerekce":"CVV kimlik doğrulama verisidir; şifreli saklanan müşteri kart bilgisidir."}},
-{{"kolon":"ccTaxNo","acilim":"Customer Card - Tax Number","olasi_kategoriler":[{{"id":1,"olasilik":0.55}},{{"id":5,"olasilik":0.45}}],"ana_kategori":1,"teknik":false,"gerekce":"Vergi no gerçek kişi müşteride kişisel veridir; ancak müşteri ilişkisini de gösterir, iki kategori arasında yakın olasılık."}},
+{{"kolon":"ccTaxNo","acilim":"Customer Card - Tax Number","olasi_kategoriler":[{{"id":5,"olasilik":0.60}},{{"id":1,"olasilik":0.40}}],"ana_kategori":5,"teknik":false,"gerekce":"Gerçek kişi müşterinin vergi no'su kişisel veridir (1) ve müşteri ilişkisini gösterir; lex specialis gereği ana kategori müşteri sırrıdır (5), 1 eşlik eder."}},
 {{"kolon":"ccMarginRate","acilim":"Customer Card - Margin Rate","olasi_kategoriler":[{{"id":4,"olasilik":1.00}}],"ana_kategori":4,"teknik":false,"gerekce":"Bankanın iç fiyatlama marjı banka sırrıdır."}},
+{{"kolon":"ccDataKeyRef","acilim":"Customer Card - Data Encryption Key Reference","olasi_kategoriler":[{{"id":6,"olasilik":0.80}},{{"id":7,"olasilik":0.20}}],"ana_kategori":6,"teknik":false,"gerekce":"Şifreleme anahtarı banka sistem sırrıdır (ana 6); şifreli saklandığından 7 eşlik eder, ana kategori 7 DEĞİLDİR; içerik taşıdığından teknik değildir."}},
 {{"kolon":"ccRowVer","acilim":null,"olasi_kategoriler":[{{"id":6,"olasilik":1.00}}],"ana_kategori":6,"teknik":true,"gerekce":"Teknik versiyon kolonudur; hiçbir kategoriye net girmediğinden en yakın olarak iç sistem bilgisi sayıldı."}}]"""
 
 
@@ -169,7 +183,16 @@ KURALLAR:
   sonra bir kez daha analiz ederek EN UYGUN TEK ana kategoriyi seç. Eşitlik hâlinde
   öncelik: 2 > 3 > 5 > 4 > 6 > 7 > 1.
 - Teknik/işlemsel kolonsa "teknik": true yaz ve en yakın kategoriyi ana kategori yap.
-- Kategori 2 varsa 1'i de ekle; tüzel kişi verisi 1/2 olamaz; müşteri bilgisi 5'tir.
+  "teknik": true YALNIZCA içeriği olmayan işlemsel kolonlar içindir (satır versiyonu, zaman
+  damgası, durum/işlem kodu, sıra no). ŞİFRELİ/HASH'Lİ/kriptografik alanlar (parola hash,
+  PIN, CVV, salt, sertifika, şifreleme anahtarı, API secret) TEKNİK DEĞİLDİR → "teknik": false.
+- 7 SAKLAMA BİÇİMİDİR: içerik sınıfı olan şifreli alanda ana kategori içeriktir (parola
+  hash → 3; tokenize hesap no → 5; şifreleme anahtarı / API secret → 6), 7 eşlik eder. Ana 7
+  YALNIZCA salt/IV/nonce/sertifika parmak izi gibi içeriksiz artefaktlarda. "secret/key/anahtar"
+  adı otomatik 7 yapmaz; sistem sırrıysa ana 6.
+- Kategori 2 varsa 1'i de ekle; tüzel kişi verisi 1/2 olamaz. Gerçek kişi MÜŞTERİ kimlik/
+  hesap verisinde ana 5 (+1): 5411 m.73 özel kanun KVKK'dan önceliklidir (lex specialis).
+  Personel/çalışan gibi müşteri olmayan gerçek kişide 5 yoktur (ana 1, hassassa 3).
 - Kolon adı anlamsız/anonimleştirilmiş görünüyorsa (örn. "col_a1b2c3") isimden açılım
   çıkarmaya çalışma; "örnek değerler" verilmişse (ham değerler; uzunluk, format ve
   değer aralığı güçlü sinyaldir) ve veri tipine dayan.

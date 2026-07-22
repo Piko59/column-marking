@@ -36,6 +36,8 @@ CATEGORY_DEFINITIONS = """\
    veriler (kişinin maaşı, geliri, mal varlığı).
    SINIR: Tüzel kişilere (şirketlere) ait veriler kişisel veri DEĞİLDİR (ama 5'e girebilir).
    Kişisel veri, kişi PERSONEL de olsa MÜŞTERİ de olsa kişisel veridir.
+   ANA KATEGORİ: Kişi banka MÜŞTERİSİ ise bu veri aynı zamanda müşteri sırrıdır; ana kategori
+   5, 1 eşlik eder (lex specialis — bkz. 5 KURAL). Müşteri OLMAYAN kişide (personel) ana 1.
 
 2. Özel Nitelikli Kişisel Veri (KVKK m.6/1 — 7499 s.K. ile değişik hâli)
    Kanunda SINIRLI SAYIDA sayılmıştır, kıyas yoluyla GENİŞLETİLEMEZ:
@@ -81,8 +83,10 @@ CATEGORY_DEFINITIONS = """\
    müşteri no, hesap no, IBAN, bakiye, hesap hareketleri/ekstre, kredi başvuru ve geri ödeme
    bilgileri, kart bilgileri, teminatlar, mevduat/yatırım/portföy, EFT-havale kayıtları,
    çek-senet, müşteri talimatları, müşteri segmenti/limiti.
-   KURAL: Müşteri gerçek kişiyse bu veriler çoğunlukla 1 ile BİRLİKTE işaretlenir;
-   tüzel kişi müşteri verisi yalnız 5'tir.
+   KURAL: Müşteri gerçek kişiyse bu veriler 1 ile BİRLİKTE işaretlenir ve ANA KATEGORİ 5 olur:
+   5411 s.K. m.73 ÖZEL kanun, KVKK GENEL kanundur; çakışmada özel kanun önceliklidir (lex
+   specialis) ve müşteri sırrı daha sıkı rejimdir (açık rızayla dahi 3. kişilere aktarılamaz).
+   Tüzel kişi müşteri verisi yalnız 5'tir.
 
 6. Gizli / Çok Gizli Veri (kurumsal gizlilik tasnifi)
    Erişimi "bilmesi gereken" ilkesiyle en dar tutulması gereken, yetkisiz açıklanması kuruma
@@ -94,13 +98,21 @@ CATEGORY_DEFINITIONS = """\
    girer; 6 kurumun kendi iç güvenlik/yönetim bilgisi içindir.
 
 7. Şifreli Veri (BDDK BSEBY m.9/3: şifreli saklama yükümlülüğü)
-   Veritabanında şifrelenmiş/hash'lenmiş/tokenize/maskeli SAKLANAN ya da mevzuat gereği öyle
-   saklanması GEREKEN alanlar: parola hash'i (salted-hash), PIN blok, şifreli kart numarası,
-   CVV, API anahtarı, token, secret, sertifika/özel anahtar, şifreleme anahtarı, salt/IV.
-   KURAL: 7 bir SAKLAMA BİÇİMİ kategorisidir, içerik sınıfı değildir (şifreli saklama,
-   BSEBY m.9/3'te hassas/sır verinin YÜKÜMLÜLÜĞÜ olarak düzenlenir). Bu yüzden içerik
-   sınıfı olan her kolonda ANA kategori içerik sınıfıdır (3/5/6...), 7 yanında eşlik eder:
-   parola hash'i → ana 3 (+7), şifreli kart no → ana 3 (+5,7), tokenize hesap no → ana 5 (+7),
-   şifreleme anahtarı → ana 6 (+7). ANA kategori 7 YALNIZCA içerik sınıfı taşımayan saf
-   kriptografik artefaktlarda olur (salt, IV, sertifika parmak izi gibi).
+   Bir SAKLAMA BİÇİMİ kategorisidir — İÇERİK SINIFI DEĞİLDİR (şifreli saklama, BSEBY m.9/3'te
+   hassas/sır verinin YÜKÜMLÜLÜĞÜ olarak düzenlenir). Veritabanında şifrelenmiş/hash'lenmiş/
+   tokenize/maskeli SAKLANAN alanlarda, içerik sınıfının YANINDA eşlik eden bir bayraktır;
+   tek başına ana kategori olmaz.
+   İÇERİK SINIFI TAŞIYAN ŞİFRELİ ALANLARDA ANA KATEGORİ İÇERİKTİR, 7 yalnız eşlik eder:
+     • parola/PIN hash'i, OTP, güvenlik sorusu cevabı → ana 3 (+7)
+     • şifreli kart numarası / CVV → ana 3 (+5, +7)
+     • tokenize hesap/müşteri no → ana 5 (+7)
+     • şifreleme anahtarı, API secret, özel anahtar, sistem/servis parolası → ana 6 (+7)
+   ANA kategori 7 YALNIZCA hiçbir içerik sınıfı taşımayan SAF kriptografik artefaktlarda
+   seçilir: salt, IV (initialization vector), nonce, sertifika parmak izi (fingerprint).
+   DİKKAT-1: "anahtar/secret/key" gibi görünen bir alan otomatik 7 DEĞİLDİR. Bir SİSTEM
+   SIRRIYSA (şifreleme anahtarı, API secret, özel anahtar) ana kategori 6'dır; şifreli
+   saklanması onu 7 YAPMAZ, yalnız 7'yi yanına ekler.
+   DİKKAT-2: Şifreli/hash'li/tokenize saklanan bir alan TEKNİK bir kolon DEĞİLDİR — 7 (ve
+   varsa içerik sınıfı) taşır; "teknik": false olur. "teknik": true yalnız sınıflandırılabilir
+   içeriği OLMAYAN işlemsel kolonlar içindir (satır versiyonu, zaman damgası, durum kodu).
 """
